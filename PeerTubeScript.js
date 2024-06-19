@@ -53,7 +53,7 @@ function getChannelPager(path, params, page) {
 			new PlatformID(PLATFORM, v.name, config.id), 
 			v.displayName, 
 			replaceUrlInstanceHost(v.url, { sufixSourceInstance: true }), 
-			v.avatar ? `${plugin.config.constants.baseUrl}${v.avatar.path}` : ""
+			getAvatarUrl(v)
 		);
 
 	}), obj.total > (start + count), path, params, page);
@@ -91,7 +91,8 @@ function getVideoPager(path, params, page) {
 				new PlatformID(PLATFORM, v.channel.name, config.id), 
 				v.channel.displayName, 
 				replaceUrlInstanceHost(v.channel.url, { sufixSourceInstance: true }),
-				v.channel.avatar ? `${plugin.config.constants.baseUrl}${v.channel.avatar.path}` : ""),
+				getAvatarUrl(v)
+			),
 			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
 			duration: v.duration,
 			viewCount: v.views,
@@ -130,7 +131,7 @@ function getCommentPager(path, params, page) {
 				new PlatformID(PLATFORM, v.account.name, config.id),
 				v.account.displayName, 
 				 replaceUrlInstanceHost(`${plugin.config.constants.baseUrl}/api/v1/video-channels/${v.account.name}`, { sufixSourceInstance: true }), 
-				 ""
+				 getAvatarUrl(v)
 				),
 			message: v.text,
 			rating: new RatingLikes(0),
@@ -246,7 +247,7 @@ source.getChannel = function (url) {
 	return new PlatformChannel({
 		id: new PlatformID(PLATFORM, obj.name, config.id),
 		name: obj.displayName,
-		thumbnail: obj.avatar ? `${plugin.config.constants.baseUrl}${obj.avatar.path}` : "",
+		thumbnail: getAvatarUrl(obj),
 		banner: null,
 		subscribers: obj.followersCount,
 		description: obj.description ?? "",
@@ -388,7 +389,7 @@ source.getContentDetails = function (url) {
                 new PlatformID(PLATFORM, obj.channel.name, config.id),
                 obj.channel.displayName,
                 replaceUrlInstanceHost(obj.channel.url, { sufixSourceInstance: true }),
-                obj.channel.avatar ? `${plugin.config.constants.baseUrl}${obj.channel.avatar.path}` : ""
+                getAvatarUrl(obj)
             ),
             datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
             duration: obj.duration,
@@ -516,3 +517,29 @@ function extractVersionParts(version) {
 	
 	return true;
   }
+
+  /** 
+ * Find and return the avatar URL from various potential locations to support different Peertube instance versions 
+ * @param {object} obj  
+ * @returns {String} Avatar URL 
+ */ 
+function getAvatarUrl(obj) { 
+ 
+    const relativePath = [ 
+        obj?.avatar?.path, 
+        obj?.channel?.avatar?.path, 
+        obj?.account?.avatar?.path,// When channel don't have avatar, fallback to account avatar (if one) 
+        obj?.ownerAccount?.avatar?.path, //found in channel details 
+        // Peertube v6.0.0 
+        obj?.avatars?.length ? obj.avatars[obj.avatars.length - 1].path : "",//channel 
+        obj?.channel?.avatars?.length ? obj.channel.avatars[obj.channel.avatars.length - 1].path : "",//Videos details 
+        obj?.account?.avatars?.length ? obj.account.avatars[obj.account.avatars.length - 1].path : "",//comments 
+		obj?.ownerAccount?.avatars?.length ? obj.ownerAccount.avatars[obj.ownerAccount.avatars.length - 1].path : ""//channel details 
+    ].find(v => v); // Get the first non-empty value 
+ 
+    if (relativePath) { 
+		return `${plugin.config.constants.baseUrl}${relativePath}`; 
+    } 
+ 
+    return ""; 
+}
