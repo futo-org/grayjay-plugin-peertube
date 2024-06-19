@@ -121,7 +121,9 @@ function getCommentPager(path, params, page) {
 
 	const obj = JSON.parse(res.body);
 
-	return new PeerTubeCommentPager(obj.data.map(v => {
+	return new PeerTubeCommentPager(obj.data
+		.filter(v => !v.isDeleted || (v.isDeleted && v.totalReplies > 0)) // filter out deleted comments without replies. TODO: handle soft deleted comments with replies
+		.map(v => {
 		return new Comment({
 			contextUrl: url,
 			author: new PlatformAuthorLink(
