@@ -45,7 +45,12 @@ function getChannelPager(path, params, page) {
 	const obj = JSON.parse(res.body);
 
 	return new PeerTubeChannelPager(obj.data.map(v => {
-		return new PlatformAuthorLink(new PlatformID(PLATFORM, v.name, config.id), v.displayName, v.url, v.avatar ? `${plugin.config.constants.baseUrl}${v.avatar.path}` : "");
+		return new PlatformAuthorLink(
+			new PlatformID(PLATFORM, v.name, config.id), 
+			v.displayName, 
+			replaceUrlInstanceHost(v.url, { sufixSourceInstance: true }), 
+			v.avatar ? `${plugin.config.constants.baseUrl}${v.avatar.path}` : ""
+		);
 
 	}), obj.total > (start + count), path, params, page);
 }
@@ -74,14 +79,15 @@ function getVideoPager(path, params, page) {
 			id: new PlatformID(PLATFORM, v.uuid, config.id),
 			name: v.name ?? "",
 			thumbnails: new Thumbnails([new Thumbnail(`${plugin.config.constants.baseUrl}${v.thumbnailPath}`, 0)]),
-			author: new PlatformAuthorLink(new PlatformID(PLATFORM, v.channel.name, config.id), 
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, v.channel.name, config.id), 
 				v.channel.displayName, 
-				v.channel.url,
+				replaceUrlInstanceHost(v.channel.url, { sufixSourceInstance: true }),
 				v.channel.avatar ? `${plugin.config.constants.baseUrl}${v.channel.avatar.path}` : ""),
 			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
 			duration: v.duration,
 			viewCount: v.views,
-			url: v.url,
+			url: replaceUrlInstanceHost(v.url),
 			isLive: v.isLive
 		});
 
@@ -110,7 +116,12 @@ function getCommentPager(path, params, page) {
 	return new PeerTubeCommentPager(obj.data.map(v => {
 		return new Comment({
 			contextUrl: url,
-			author: new PlatformAuthorLink(new PlatformID(PLATFORM, v.account.name, config.id), v.account.displayName, `${plugin.config.constants.baseUrl}/api/v1/video-channels/${v.account.name}`, ""),
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, v.account.name, config.id),
+				v.account.displayName, 
+				 replaceUrlInstanceHost(`${plugin.config.constants.baseUrl}/api/v1/video-channels/${v.account.name}`, { sufixSourceInstance: true }), 
+				 ""
+				),
 			message: v.text,
 			rating: new RatingLikes(0),
 			date: Math.round((new Date(v.createdAt)).getTime() / 1000),
@@ -122,6 +133,13 @@ function getCommentPager(path, params, page) {
 
 source.enable = function (conf) {
 	config = conf ?? {};
+	if(IS_TESTING) {
+		plugin.config = {
+			constants : {
+				baseUrl: "https://peertube.futo.org"
+			}
+		}
+	}
 };
 
 source.getHome = function () {
@@ -188,7 +206,7 @@ source.getChannel = function (url) {
 		banner: null,
 		subscribers: obj.followersCount,
 		description: obj.description ?? "",
-		url: obj.url,
+		url: replaceUrlInstanceHost(obj.url, { sufixSourceInstance: true }),
 		links: {}
 	});
 };
@@ -281,14 +299,15 @@ source.getContentDetails = function (url) {
 		id: new PlatformID(PLATFORM, obj.uuid, config.id),
 		name: obj.name,
 		thumbnails: new Thumbnails([new Thumbnail(`${plugin.config.constants.baseUrl}${obj.thumbnailPath}`, 0)]),
-		author: new PlatformAuthorLink(new PlatformID(PLATFORM, obj.channel.name, config.id), 
+		author: new PlatformAuthorLink(
+			new PlatformID(PLATFORM, obj.channel.name, config.id), 
 			obj.channel.displayName, 
-			obj.channel.url,
+			replaceUrlInstanceHost(obj.channel.url, { sufixSourceInstance: true }),
 			obj.channel.avatar ? `${plugin.config.constants.baseUrl}${obj.channel.avatar.path}` : ""),
 		datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
 		duration: obj.duration,
 		viewCount: obj.views,
-		url: obj.url,
+		url: replaceUrlInstanceHost(obj.url),
 		isLive: obj.isLive,
 		description: obj.description,
 		video: new VideoSourceDescriptor(sources)
@@ -332,4 +351,36 @@ class PeerTubeCommentPager extends CommentPager {
 	nextPage() {
 		return getCommentPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
 	}
+}
+
+
+function replaceUrlInstanceHost(originalUrl, options = { sufixSourceInstance: false }) {
+    try {
+
+        if (typeof originalUrl !== 'string') {
+            throw new Error('originalUrl must be a string');
+        }
+
+        // Parse original URL
+        const url = new URL(originalUrl);
+        
+        const targetHost = new URL(plugin.config.constants.baseUrl).host;
+
+        // Replace host only if different
+        if (url.host.toLowerCase() !== targetHost.toLowerCase()) {
+            url.host = targetHost;
+        }
+
+        let newUrl = url.toString();
+        
+        // Optional source instance suffix. This is needed to query the remote channel on the instance api
+        if (options.sufixSourceInstance) {
+            newUrl += `@${url.host}`;
+        }
+
+        return newUrl;
+    } catch (error) {
+        // More informative error handling
+        throw new ScriptException(`Error processing URL: ${originalUrl} - ${error.message}`);
+    }
 }
