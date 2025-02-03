@@ -363,6 +363,7 @@ function replaceUrlInstanceHost(originalUrl, options = { sufixSourceInstance: fa
 
         // Parse original URL
         const url = new URL(originalUrl);
+		const originalHost = url.host;
         
         const targetHost = new URL(plugin.config.constants.baseUrl).host;
 
@@ -375,7 +376,7 @@ function replaceUrlInstanceHost(originalUrl, options = { sufixSourceInstance: fa
         
         // Optional source instance suffix. This is needed to query the remote channel on the instance api
         if (options.sufixSourceInstance) {
-            newUrl += `@${url.host}`;
+            newUrl += `@${originalHost}`;
         }
 
         return newUrl;
