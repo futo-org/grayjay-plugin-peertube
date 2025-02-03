@@ -75,6 +75,10 @@ function getVideoPager(path, params, page) {
 	const obj = JSON.parse(res.body);
 
 	return new PeerTubeVideoPager(obj.data.map(v => {
+
+		//Some older instance versions such as 3.0.0, may not contain the url property
+		const contentUrl = v.url || `${plugin.config.constants.baseUrl}/videos/watch/${v.uuid}`
+
 		return new PlatformVideo({
 			id: new PlatformID(PLATFORM, v.uuid, config.id),
 			name: v.name ?? "",
@@ -87,7 +91,7 @@ function getVideoPager(path, params, page) {
 			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
 			duration: v.duration,
 			viewCount: v.views,
-			url: replaceUrlInstanceHost(v.url),
+			url: replaceUrlInstanceHost(contentUrl),
 			isLive: v.isLive
 		});
 
@@ -294,6 +298,9 @@ source.getContentDetails = function (url) {
 			}));
 		}
 	}
+ 
+	//Some older instance versions such as 3.0.0, may not contain the url property
+	const contentUrl = obj.url || `${plugin.config.constants.baseUrl}/videos/watch/${obj.uuid}`
 
 	return new PlatformVideoDetails({
 		id: new PlatformID(PLATFORM, obj.uuid, config.id),
@@ -307,7 +314,7 @@ source.getContentDetails = function (url) {
 		datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
 		duration: obj.duration,
 		viewCount: obj.views,
-		url: replaceUrlInstanceHost(obj.url),
+		url: replaceUrlInstanceHost(contentUrl),
 		isLive: obj.isLive,
 		description: obj.description,
 		video: new VideoSourceDescriptor(sources)
