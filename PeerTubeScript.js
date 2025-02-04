@@ -1,6 +1,10 @@
 const PLATFORM = "PeerTube";
 
-var config = {};
+let config = {};
+
+let state = {
+	serverVersion: ''
+}
 
 /**
  * Build a query
@@ -135,8 +139,10 @@ function getCommentPager(path, params, page) {
 	}), obj.total > (start + count), path, params, page);
 }
 
-source.enable = function (conf) {
+source.enable = function (conf, settings, saveStateStr) {
 	config = conf ?? {};
+	let didSaveState = false;
+
 	if(IS_TESTING) {
 		plugin.config = {
 			constants : {
@@ -144,11 +150,43 @@ source.enable = function (conf) {
 			}
 		}
 	}
+
+	try {
+		if (saveStateStr) {
+		  state = JSON.parse(saveStateStr);
+		  didSaveState = true;
+		}
+	  } catch (ex) {
+		log('Failed to parse saveState:' + ex);
+	  }
+
+	if(!didSaveState) {
+		const res = http.GET(`${plugin.config.constants.baseUrl}/api/v1/config`, {});
+
+		if(res.isOk) {
+			const serverConfig = JSON.parse(res.body);
+			state.serverVersion = serverConfig.serverVersion;
+		}
+	}
+
 };
 
+source.saveState = function() {
+	return JSON.stringify(state)
+}
+
 source.getHome = function () {
+
+	let sort = '';
+
+	// https://docs.joinpeertube.org/CHANGELOG#v3-1-0
+	// old versions will fail when using the 'best' sorting param
+	if(ServerInstanceVersionIsSameOrNewer(state.serverVersion, '3.1.0')) {
+		sort = 'best'
+	}
+
 	return getVideoPager('/api/v1/videos', {
-		sort: "best"
+		sort
 	}, 0);
 };
 
@@ -254,71 +292,113 @@ const supportedResolutions = {
 };
 
 source.getContentDetails = function (url) {
-	const tokens = url.split('/');
-	const handle = tokens[tokens.length - 1];
-	const urlWithParams = `${plugin.config.constants.baseUrl}/api/v1/videos/${handle}`;
-	log("GET " + urlWithParams);
-	const res = http.GET(urlWithParams, {});
+    // Extract handle from URL
+    function getHandleFromUrl(url) {
+        try {
+            const tokens = url.split('/');
+            return tokens[tokens.length - 1];
+        } catch (err) {
+            log("Invalid URL format", err);
+            return null;
+        }
+    }
 
-	if (res.code != 200) {
-		log("Failed to get video detail", res);
-		return null;
-	}
+    // Create video source based on file and resolution
+    function createVideoSource(file, duration) {
+        const supportedResolution = file.resolution.width && file.resolution.height
+            ? { width: file.resolution.width, height: file.resolution.height }
+            : supportedResolutions[file.resolution.label];
 
-	const obj = JSON.parse(res.body);
-	const sources = [];
+        if (!supportedResolution) {
+            return null;
+        }
 
-	for (const streamingPlaylist of obj.streamingPlaylists) {
-		sources.push(new HLSSource({
-			name: "HLS",
-			url: streamingPlaylist.playlistUrl,
-			duration: obj.duration ?? 0,
-			priority: true
-		}));
+        return new VideoUrlSource({
+            name: file.resolution.label,
+            url: file.fileDownloadUrl,
+            width: supportedResolution.width,
+            height: supportedResolution.height,
+            duration: duration,
+            container: "video/mp4"
+        });
+    }
 
-		for (const file of streamingPlaylist.files) {
-			let supportedResolution;
-			if (file.resolution.width && file.resolution.height) {
-				supportedResolution = { width: file.resolution.width, height: file.resolution.height };
-			} else {
-				supportedResolution = supportedResolutions[file.resolution.label];
-			}
+    // Process files and create sources
+    function processFiles(files, duration) {
+        const sources = [];
+        for (const file of (files ?? [])) {
+            const source = createVideoSource(file, duration);
+            if (source) {
+                sources.push(source);
+            }
+        }
+        return sources;
+    }
 
-			if (!supportedResolution) {
-				continue;
-			}
+    try {
+        const handle = getHandleFromUrl(url);
+        if (!handle) {
+            return null;
+        }
 
-			sources.push(new VideoUrlSource({
-				name: file.resolution.label,
-				url: file.fileDownloadUrl,
-				width: supportedResolution.width,
-				height: supportedResolution.height,
-				duration: obj.duration,
-				container: "video/mp4"
-			}));
-		}
-	}
- 
-	//Some older instance versions such as 3.0.0, may not contain the url property
-	const contentUrl = obj.url || `${plugin.config.constants.baseUrl}/videos/watch/${obj.uuid}`
+        const urlWithParams = `${plugin.config.constants.baseUrl}/api/v1/videos/${handle}`;
+        log("GET " + urlWithParams);    
+        const res = http.GET(urlWithParams, {});
+        if (!res.isOk) {
+            log("Failed to get video detail", res);
+            return null;
+        }
 
-	return new PlatformVideoDetails({
-		id: new PlatformID(PLATFORM, obj.uuid, config.id),
-		name: obj.name,
-		thumbnails: new Thumbnails([new Thumbnail(`${plugin.config.constants.baseUrl}${obj.thumbnailPath}`, 0)]),
-		author: new PlatformAuthorLink(
-			new PlatformID(PLATFORM, obj.channel.name, config.id), 
-			obj.channel.displayName, 
-			replaceUrlInstanceHost(obj.channel.url, { sufixSourceInstance: true }),
-			obj.channel.avatar ? `${plugin.config.constants.baseUrl}${obj.channel.avatar.path}` : ""),
-		datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
-		duration: obj.duration,
-		viewCount: obj.views,
-		url: replaceUrlInstanceHost(contentUrl),
-		isLive: obj.isLive,
-		description: obj.description,
-		video: new VideoSourceDescriptor(sources)
-	});
+        const obj = JSON.parse(res.body);
+        if (!obj) {
+            log("Failed to parse response");
+            return null;
+        }
+
+        const sources = [];
+
+        // Process streaming playlists
+        for (const playlist of (obj?.streamingPlaylists ?? [])) {
+            sources.push(new HLSSource({
+                name: "HLS",
+                url: playlist.playlistUrl,
+                duration: obj.duration ?? 0,
+                priority: true
+            }));
+
+            sources.push(...processFiles(playlist?.files, obj.duration));
+        }
+
+        // Process direct files (older versions)
+        sources.push(...processFiles(obj?.files, obj.duration));
+
+        //Some older instance versions such as 3.0.0, may not contain the url property
+		const contentUrl = obj.url || `${plugin.config.constants.baseUrl}/videos/watch/${obj.uuid}`;
+        
+        return new PlatformVideoDetails({
+            id: new PlatformID(PLATFORM, obj.uuid, config.id),
+            name: obj.name,
+            thumbnails: new Thumbnails([new Thumbnail(
+                `${plugin.config.constants.baseUrl}${obj.thumbnailPath}`, 
+                0
+            )]),
+            author: new PlatformAuthorLink(
+                new PlatformID(PLATFORM, obj.channel.name, config.id),
+                obj.channel.displayName,
+                replaceUrlInstanceHost(obj.channel.url, { sufixSourceInstance: true }),
+                obj.channel.avatar ? `${plugin.config.constants.baseUrl}${obj.channel.avatar.path}` : ""
+            ),
+            datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
+            duration: obj.duration,
+            viewCount: obj.views,
+            url: replaceUrlInstanceHost(contentUrl),
+            isLive: obj.isLive,
+            description: obj.description,
+            video: new VideoSourceDescriptor(sources)
+        });
+    } catch (err) {
+        throw new ScriptException("Error processing video details", err);
+    }
 };
 
 source.getComments = function (url) {
@@ -392,3 +472,45 @@ function replaceUrlInstanceHost(originalUrl, options = { sufixSourceInstance: fa
         throw new ScriptException(`Error processing URL: ${originalUrl} - ${error.message}`);
     }
 }
+
+function extractVersionParts(version) {
+	// Convert to string and trim any 'v' prefix
+	const versionStr = String(version).replace(/^v/, '');
+	
+	// Split version into numeric parts
+	const parts = versionStr.split('.').map(part => {
+	  // Ensure each part is a number, default to 0 if not
+	  const num = parseInt(part, 10);
+	  return isNaN(num) ? 0 : num;
+	});
+	
+	// Pad with zeros to ensure at least 3 parts
+	while (parts.length < 3) {
+	  parts.push(0);
+	}
+	
+	return parts;
+  }
+  
+  function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {
+	// Handle null or undefined inputs
+	if (testVersion == null || expectedVersion == null) {
+	  return false;
+	}
+	
+	// Extract numeric parts of both versions
+	const testParts = extractVersionParts(testVersion);
+	const expectedParts = extractVersionParts(expectedVersion);
+	
+	// Compare each part sequentially
+	for (let i = 0; i < 3; i++) {
+	  if (testParts[i] > expectedParts[i]) {
+		return true;  // Current version is newer
+	  }
+	  if (testParts[i] < expectedParts[i]) {
+		return false;  // Current version is older
+	  }
+	}
+	
+	return true;
+  }
