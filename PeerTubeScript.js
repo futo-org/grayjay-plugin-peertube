@@ -1,151 +1,22 @@
 const PLATFORM = "PeerTube";
 
 let config = {};
+let _settings = {};
 
 let state = {
 	serverVersion: '',
-	peertubeIndexedInstances: []
+	peertubeIndexedInstances: [],
+	isSearchEngineSepiaSearch: false
 }
 
-/**
- * Build a query
- * @param {{[key: string]: any}} params Query params
- * @returns {String} Query string
- */
-function buildQuery(params) {
-	let query = "";
-	let first = true;
-	for (const [key, value] of Object.entries(params)) {
-		if (value) {
-			if (first) {
-				first = false;
-			} else {
-				query += "&";
-			}
-
-			query += `${key}=${value}`;
-		}
-	}
-
-	return (query && query.length > 0) ? `?${query}` : ""; 
-}
-
-function getChannelPager(path, params, page) {
-	log(`getChannelPager page=${page}`, params)
-
-	const count = 20;
-	const start = (page ?? 0) * count;
-	params = { ... params, start, count }
-
-	const url = `${plugin.config.constants.baseUrl}${path}`;
-	const urlWithParams = `${url}${buildQuery(params)}`;
-	log("GET " + urlWithParams);
-	const res = http.GET(urlWithParams, {});
-
-	if (res.code != 200) {
-		log("Failed to get channels", res);
-		return new ChannelPager([], false);
-	}
-
-	const obj = JSON.parse(res.body);
-
-	return new PeerTubeChannelPager(obj.data.map(v => {
-		return new PlatformAuthorLink(
-			new PlatformID(PLATFORM, v.name, config.id), 
-			v.displayName, 
-			v.url, 
-			getAvatarUrl(v)
-		);
-
-	}), obj.total > (start + count), path, params, page);
-}
-
-function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl) {
-	log(`getVideoPager page=${page}`, params)
-
-	const count = 20;
-	const start = (page ?? 0) * count;
-	params = { ... params, start, count }
-
-	const url = `${sourceHost}${path}`;
-	
-	const urlWithParams = `${url}${buildQuery(params)}`;
-	log("GET " + urlWithParams);
-	const res = http.GET(urlWithParams, {});
-
-	if (res.code != 200) {
-		log("Failed to get videos", res);
-		return new VideoPager([], false);
-	}
-
-	const obj = JSON.parse(res.body);
-
-	return new PeerTubeVideoPager(obj.data.map(v => {
-
-		//Some older instance versions such as 3.0.0, may not contain the url property
-		const contentUrl = v.url || `${sourceHost}/videos/watch/${v.uuid}`
-
-		return new PlatformVideo({
-			id: new PlatformID(PLATFORM, v.uuid, config.id),
-			name: v.name ?? "",
-			thumbnails: new Thumbnails([new Thumbnail(`${sourceHost}${v.thumbnailPath}`, 0)]),
-			author: new PlatformAuthorLink(
-				new PlatformID(PLATFORM, v.channel.name, config.id), 
-				v.channel.displayName, 
-				v.channel.url,
-				getAvatarUrl(v, sourceHost)
-			),
-			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
-			duration: v.duration,
-			viewCount: v.views,
-			url: contentUrl,
-			isLive: v.isLive
-		});
-
-	}), obj.total > (start + count), path, params, page);
-}
-
-function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
-	log(`getCommentPager page=${page}`, params)
-
-	const count = 20;
-	const start = (page ?? 0) * count;
-	params = { ... params, start, count }
-
-	const url = `${sourceBaseUrl}${path}`;
-	const urlWithParams = `${url}${buildQuery(params)}`;
-	log("GET " + urlWithParams);
-	const res = http.GET(urlWithParams, {});
-
-	if (res.code != 200) {
-		log("Failed to get comments", res);
-		return new CommentPager([], false);
-	}
-
-	const obj = JSON.parse(res.body);
-
-	return new PeerTubeCommentPager(obj.data
-		.filter(v => !v.isDeleted || (v.isDeleted && v.totalReplies > 0)) // filter out deleted comments without replies. TODO: handle soft deleted comments with replies
-		.map(v => {
-		return new Comment({
-			contextUrl: url,
-			author: new PlatformAuthorLink(
-				new PlatformID(PLATFORM, v.account.name, config.id),
-				v.account.displayName, 
-				 `${sourceBaseUrl}/api/v1/video-channels/${v.account.name}`, 
-				 getAvatarUrl(v)
-				),
-			message: v.text,
-			rating: new RatingLikes(0),
-			date: Math.round((new Date(v.createdAt)).getTime() / 1000),
-			replyCount: v.totalReplies,
-			context: { id: v.id }
-		});
-	}), obj.total > (start + count), path, params, page);
-}
+let SEARCH_ENGINE_OPTIONS = [];
 
 source.enable = function (conf, settings, saveStateStr) {
 	config = conf ?? {};
+	_settings = settings ?? {};
+
+	SEARCH_ENGINE_OPTIONS = loadOptionsForSetting('searchEngineIndex');
+
 	let didSaveState = false;
 
 	if(IS_TESTING) {
@@ -154,7 +25,11 @@ source.enable = function (conf, settings, saveStateStr) {
 				baseUrl: "https://peertube.futo.org"
 			}
 		}
+
+		_settings.searchEngineIndex = 0; //Current Instance
 	}
+
+		state.isSearchEngineSepiaSearch = SEARCH_ENGINE_OPTIONS[_settings.searchEngineIndex] == 'Sepia Search'
 
 	try {
 		if (saveStateStr) {
@@ -229,12 +104,36 @@ source.search = function (query, type, order, filters) {
 		params.isLive = false;
 	}
 
-	return getVideoPager('/api/v1/search/videos', params, 0);
+	let sourceHost = '';
+
+	if(state.isSearchEngineSepiaSearch) {
+		params.resultType = 'videos';
+		params.nsfw = false;
+		params.sort='-createdAt'
+		sourceHost = 'https://sepiasearch.org'
+	} else {
+		sourceHost = plugin.config.constants.baseUrl;
+	}
+
+	const isSearch = true;
+
+	return getVideoPager('/api/v1/search/videos', params, 0, sourceHost, isSearch);
 };
 source.searchChannels = function (query) {
+
+	let sourceHost = '';
+
+	if(state.isSearchEngineSepiaSearch) {
+		sourceHost = 'https://sepiasearch.org'
+	} else {
+		sourceHost = plugin.config.constants.baseUrl;
+	}
+
+	const isSearch = true;
+
 	return getChannelPager('/api/v1/search/video-channels', {
 		search: query
-	}, 0);
+	}, 0, sourceHost, isSearch);
 };
 
 source.isChannelUrl = function(url) {
@@ -475,12 +374,12 @@ source.getSubComments = function(comment) {
 }
 
 class PeerTubeVideoPager extends VideoPager {
-	constructor(results, hasMore, path, params, page) {
-		super(results, hasMore, { path, params, page });
+	constructor(results, hasMore, path, params, page, sourceHost, isSearch) {
+		super(results, hasMore, { path, params, page, sourceHost, isSearch });
 	}
 	
 	nextPage() {
-		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
+		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch);
 	}
 }
 
@@ -504,7 +403,165 @@ class PeerTubeCommentPager extends CommentPager {
 	}
 }
 
+/**
+ * Build a query
+ * @param {{[key: string]: any}} params Query params
+ * @returns {String} Query string
+ */
+function buildQuery(params) {
+	let query = "";
+	let first = true;
+	for (const [key, value] of Object.entries(params)) {
+		if (value) {
+			if (first) {
+				first = false;
+			} else {
+				query += "&";
+			}
 
+			query += `${key}=${value}`;
+		}
+	}
+
+	return (query && query.length > 0) ? `?${query}` : ""; 
+}
+
+function getChannelPager(path, params, page, sourceHost=plugin.config.constants.baseUrl, isSearch=false) {
+	log(`getChannelPager page=${page}`, params)
+
+	const count = 20;
+	const start = (page ?? 0) * count;
+	params = { ... params, start, count }
+
+	const url = `${sourceHost}${path}`;
+	const urlWithParams = `${url}${buildQuery(params)}`;
+	log("GET " + urlWithParams);
+	const res = http.GET(urlWithParams, {});
+
+	if (res.code != 200) {
+		log("Failed to get channels", res);
+		return new ChannelPager([], false);
+	}
+
+	const obj = JSON.parse(res.body);
+
+	return new PeerTubeChannelPager(obj.data.map(v => {
+	
+		const instanceBaseUrl = isSearch ? getBaseUrl(v.url) : sourceHost;	
+
+		return new PlatformAuthorLink(
+			new PlatformID(PLATFORM, v.name, config.id), 
+			v.displayName, 
+			v.url, 
+			getAvatarUrl(v, instanceBaseUrl),
+			v?.followersCount ?? 0
+		);
+
+	}), obj.total > (start + count), path, params, page);
+}
+
+function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch=false) {
+	log(`getVideoPager page=${page}`, params)
+
+	const count = 20;
+	const start = (page ?? 0) * count;
+	params = { ... params, start, count }
+
+	const url = `${sourceHost}${path}`;
+	
+	const urlWithParams = `${url}${buildQuery(params)}`;
+	
+	log("GET " + urlWithParams);
+	const res = http.GET(urlWithParams, {});
+	
+
+	if (res.code != 200) {
+		log("Failed to get videos", res);
+		return new VideoPager([], false);
+	}
+
+	const obj = JSON.parse(res.body);
+
+	const hasMore = obj.total > (start + count);
+
+	const contentResultList = obj.data.map(v => {
+
+		const baseUrl = [
+			v.url,
+			v.embedUrl,
+			v.previewUrl,
+			v?.thumbnailUrl,
+			v?.account?.url,
+			v?.channel?.url
+		].filter(a => a).map(getBaseUrl).find(a => a);
+
+		//Some older instance versions such as 3.0.0, may not contain the url property
+		const contentUrl = v.url || `${baseUrl}/videos/watch/${v.uuid}`;
+
+		const instanceBaseUrl = isSearch ? baseUrl : sourceHost;
+
+		return new PlatformVideo({
+			id: new PlatformID(PLATFORM, v.uuid, config.id),
+			name: v.name ?? "",
+			thumbnails: new Thumbnails([new Thumbnail(`${instanceBaseUrl}${v.thumbnailPath}`, 0)]),
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, v.channel.name, config.id), 
+				v.channel.displayName, 
+				v.channel.url,
+				getAvatarUrl(v, instanceBaseUrl)
+			),
+			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
+			duration: v.duration,
+			viewCount: v.views,
+			url: contentUrl,
+			isLive: v.isLive
+		});
+
+	});
+
+	
+
+	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch);
+}
+
+function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
+	log(`getCommentPager page=${page}`, params)
+
+	const count = 20;
+	const start = (page ?? 0) * count;
+	params = { ... params, start, count }
+
+	const url = `${sourceBaseUrl}${path}`;
+	const urlWithParams = `${url}${buildQuery(params)}`;
+	log("GET " + urlWithParams);
+	const res = http.GET(urlWithParams, {});
+
+	if (res.code != 200) {
+		log("Failed to get comments", res);
+		return new CommentPager([], false);
+	}
+
+	const obj = JSON.parse(res.body);
+
+	return new PeerTubeCommentPager(obj.data
+		.filter(v => !v.isDeleted || (v.isDeleted && v.totalReplies > 0)) // filter out deleted comments without replies. TODO: handle soft deleted comments with replies
+		.map(v => {
+		return new Comment({
+			contextUrl: url,
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, v.account.name, config.id),
+				v.account.displayName, 
+				 `${sourceBaseUrl}/api/v1/video-channels/${v.account.name}`, 
+				 getAvatarUrl(v)
+				),
+			message: v.text,
+			rating: new RatingLikes(0),
+			date: Math.round((new Date(v.createdAt)).getTime() / 1000),
+			replyCount: v.totalReplies,
+			context: { id: v.id }
+		});
+	}), obj.total > (start + count), path, params, page);
+}
 
 function extractVersionParts(version) {
 	// Convert to string and trim any 'v' prefix
@@ -615,4 +672,11 @@ function extractVideoId(url) {
         console.error('Error extracting PeerTube video ID:', error);
         return null;
     }
+}
+
+
+function loadOptionsForSetting(settingKey, transformCallback) {
+	transformCallback ??= (o) => o;
+	const setting = config?.settings?.find((s) => s.variable == settingKey);
+	return setting?.options?.map(transformCallback) ?? [];
 }
