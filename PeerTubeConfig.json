@@ -20,6 +20,14 @@
 	"allowUrls": [
 		"everywhere"
 	],
+	"changelog": {
+		"16": [
+			"Use host instances from https://instances.joinpeertube.org/instances to support channels and videos from other peertube instances;",
+			"Add a setting to switch the content and channels search from an instance to sepiasearch.org;",
+			"Improve support for older peertube server versions;",
+			"Fix bugs with channel avatars and video thumbnails in some peertube server versions;"
+		]
+	},
 
 	"constants": {
 		"baseUrl": "https://peertube.futo.org"
