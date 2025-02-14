@@ -7,8 +7,7 @@
 	"sourceUrl": "https://plugins.grayjay.app/PeerTube/PeerTubeConfig.json",
 	"repositoryUrl": "https://futo.org",
 	"scriptUrl": "./PeerTubeScript.js",
-	"version": 16,
-	
+	"version": 17,
 	"iconUrl": "./peertube.png",
 	"id": "1c291164-294c-4c2d-800d-7bc6d31d0019",
 	
@@ -26,9 +25,12 @@
 			"Add a setting to switch the content and channels search from an instance to sepiasearch.org;",
 			"Improve support for older peertube server versions;",
 			"Fix bugs with channel avatars and video thumbnails in some peertube server versions;"
+		],
+		"17" : [
+			"Fixed issue when opening federated content or a channel without opening the Home tab first;",
+			"Fixed issue with deep-linking from an indexed instance while the app is closed;"
 		]
 	},
-
 	"constants": {
 		"baseUrl": "https://peertube.futo.org"
 	},
