@@ -9,6 +9,12 @@ let state = {
 	isSearchEngineSepiaSearch: false
 }
 
+// instances are populated during deploy appended to the end of this javascript file
+// this update process is done at deploy.sh
+let INDEX_INSTANCES = {
+    instances: []
+};
+
 let SEARCH_ENGINE_OPTIONS = [];
 
 source.enable = function (conf, settings, saveStateStr) {
@@ -41,19 +47,13 @@ source.enable = function (conf, settings, saveStateStr) {
 	  }
 
 	if(!didSaveState) {
-		const [currentInstanceConfig, knownInstances] = http.batch()
+		const [currentInstanceConfig] = http.batch()
 		.GET(`${plugin.config.constants.baseUrl}/api/v1/config`, {})
-		.GET(`https://instances.joinpeertube.org/api/v1/instances?start=0&count=1000`, {})
 		.execute();
 
 		if(currentInstanceConfig.isOk) {
 			const serverConfig = JSON.parse(currentInstanceConfig.body);
 			state.serverVersion = serverConfig.serverVersion;
-		}
-
-		if(knownInstances.isOk) {
-			const instancesResponse = JSON.parse(knownInstances.body);
-			state.peertubeIndexedInstances = instancesResponse.data.map(i => i.host);
 		}
 	}
 
@@ -152,7 +152,7 @@ source.isChannelUrl = function(url) {
         const { host, pathname } = urlTest;
 
         // Check if the URL is from a known PeerTube instance
-        const isKnownInstanceUrl = state.peertubeIndexedInstances.includes(host);
+        const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
 
         // Match PeerTube channel paths:
         // - /c/{channel}
@@ -244,7 +244,7 @@ source.isContentDetailsUrl = function(url) {
         const isPeerTubeVideoPath = /^\/(videos\/(watch|embed)|w)\/[a-zA-Z0-9-_]+$/.test(pathname);
 
         // Check if the URL is from a known PeerTube instance
-        const isKnownInstanceUrl = state.peertubeIndexedInstances.includes(host);
+        const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
 
         return isInstanceContentDetails || (isKnownInstanceUrl && isPeerTubeVideoPath);
     } catch (error) {
