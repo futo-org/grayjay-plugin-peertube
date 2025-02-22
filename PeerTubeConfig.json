@@ -5,7 +5,7 @@
 	"authorUrl": "https://futo.org",
 	
 	"sourceUrl": "https://plugins.grayjay.app/PeerTube/PeerTubeConfig.json",
-	"repositoryUrl": "https://futo.org",
+	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/peertube",
 	"scriptUrl": "./PeerTubeScript.js",
 	"version": 17,
 	"iconUrl": "./peertube.png",
