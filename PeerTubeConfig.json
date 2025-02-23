@@ -3,7 +3,7 @@
 	"description": "A plugin that adds PeerTube as a source",
 	"author": "FUTO",
 	"authorUrl": "https://futo.org",
-	
+	"platformUrl": "https://joinpeertube.org/",
 	"sourceUrl": "https://plugins.grayjay.app/PeerTube/PeerTubeConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/peertube",
 	"scriptUrl": "./PeerTubeScript.js",
