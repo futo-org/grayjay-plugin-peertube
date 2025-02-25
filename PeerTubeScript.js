@@ -258,11 +258,12 @@ const supportedResolutions = {
 	'720p': { width: 1280, height: 720 },
 	'480p': { width: 854, height: 480 },
 	'360p': { width: 640, height: 360 },
+	'240p': { width: 426, height: 240 },
 	'144p': { width: 256, height: 144 }
-};
+  };
 
 source.getContentDetails = function (url) {
-
+	
 
     // Create video source based on file and resolution
     function createVideoSource(file, duration) {
@@ -276,7 +277,7 @@ source.getContentDetails = function (url) {
 
         return new VideoUrlSource({
             name: file.resolution.label,
-            url: file.fileDownloadUrl,
+            url: file.fileUrl ?? file.fileDownloadUrl,
             width: supportedResolution.width,
             height: supportedResolution.height,
             duration: duration,
