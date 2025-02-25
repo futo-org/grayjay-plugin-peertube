@@ -9,7 +9,7 @@ let state = {
 }
 
 // instances are populated during deploy appended to the end of this javascript file
-// this update process is done at deploy.sh
+// this update process is done at update-instances.sh
 let INDEX_INSTANCES = {
     instances: []
 };
