@@ -11,7 +11,7 @@ let state = {
 // instances are populated during deploy appended to the end of this javascript file
 // this update process is done at update-instances.sh
 let INDEX_INSTANCES = {
-    instances: []
+	instances: []
 };
 
 let SEARCH_ENGINE_OPTIONS = [];
@@ -24,9 +24,9 @@ source.enable = function (conf, settings, saveStateStr) {
 
 	let didSaveState = false;
 
-	if(IS_TESTING) {
+	if (IS_TESTING) {
 		plugin.config = {
-			constants : {
+			constants: {
 				baseUrl: "https://peertube.futo.org"
 			}
 		}
@@ -34,23 +34,23 @@ source.enable = function (conf, settings, saveStateStr) {
 		_settings.searchEngineIndex = 0; //Current Instance
 	}
 
-		state.isSearchEngineSepiaSearch = SEARCH_ENGINE_OPTIONS[_settings.searchEngineIndex] == 'Sepia Search'
+	state.isSearchEngineSepiaSearch = SEARCH_ENGINE_OPTIONS[_settings.searchEngineIndex] == 'Sepia Search'
 
 	try {
 		if (saveStateStr) {
-		  state = JSON.parse(saveStateStr);
-		  didSaveState = true;
+			state = JSON.parse(saveStateStr);
+			didSaveState = true;
 		}
-	  } catch (ex) {
+	} catch (ex) {
 		log('Failed to parse saveState:' + ex);
-	  }
+	}
 
-	if(!didSaveState) {
+	if (!didSaveState) {
 		const [currentInstanceConfig] = http.batch()
-		.GET(`${plugin.config.constants.baseUrl}/api/v1/config`, {})
-		.execute();
+			.GET(`${plugin.config.constants.baseUrl}/api/v1/config`, {})
+			.execute();
 
-		if(currentInstanceConfig.isOk) {
+		if (currentInstanceConfig.isOk) {
 			const serverConfig = JSON.parse(currentInstanceConfig.body);
 			state.serverVersion = serverConfig.serverVersion;
 		}
@@ -58,7 +58,7 @@ source.enable = function (conf, settings, saveStateStr) {
 
 };
 
-source.saveState = function() {
+source.saveState = function () {
 	return JSON.stringify(state)
 }
 
@@ -68,7 +68,7 @@ source.getHome = function () {
 
 	// https://docs.joinpeertube.org/CHANGELOG#v3-1-0
 	// old versions will fail when using the 'best' sorting param
-	if(ServerInstanceVersionIsSameOrNewer(state.serverVersion, '3.1.0')) {
+	if (ServerInstanceVersionIsSameOrNewer(state.serverVersion, '3.1.0')) {
 		sort = 'best'
 	}
 
@@ -77,7 +77,7 @@ source.getHome = function () {
 	}, 0);
 };
 
-source.searchSuggestions = function(query) {
+source.searchSuggestions = function (query) {
 	return [];
 };
 source.getSearchCapabilities = () => {
@@ -105,10 +105,10 @@ source.search = function (query, type, order, filters) {
 
 	let sourceHost = '';
 
-	if(state.isSearchEngineSepiaSearch) {
+	if (state.isSearchEngineSepiaSearch) {
 		params.resultType = 'videos';
 		params.nsfw = false;
-		params.sort='-createdAt'
+		params.sort = '-createdAt'
 		sourceHost = 'https://sepiasearch.org'
 	} else {
 		sourceHost = plugin.config.constants.baseUrl;
@@ -122,7 +122,7 @@ source.searchChannels = function (query) {
 
 	let sourceHost = '';
 
-	if(state.isSearchEngineSepiaSearch) {
+	if (state.isSearchEngineSepiaSearch) {
 		sourceHost = 'https://sepiasearch.org'
 	} else {
 		sourceHost = plugin.config.constants.baseUrl;
@@ -135,38 +135,38 @@ source.searchChannels = function (query) {
 	}, 0, sourceHost, isSearch);
 };
 
-source.isChannelUrl = function(url) {
-    try {
+source.isChannelUrl = function (url) {
+	try {
 
 		log(`isChannel: ${url}`)
 
-        if (!url) return false;
+		if (!url) return false;
 
-        // Check if the URL belongs to the base instance
-        const baseUrl = plugin.config.constants.baseUrl;
-        const isInstanceChannel = url.startsWith(`${baseUrl}/video-channels/`) || url.startsWith(`${baseUrl}/c/`);
-        if (isInstanceChannel) return true;
+		// Check if the URL belongs to the base instance
+		const baseUrl = plugin.config.constants.baseUrl;
+		const isInstanceChannel = url.startsWith(`${baseUrl}/video-channels/`) || url.startsWith(`${baseUrl}/c/`);
+		if (isInstanceChannel) return true;
 
-        const urlTest = new URL(url);
-        const { host, pathname } = urlTest;
+		const urlTest = new URL(url);
+		const { host, pathname } = urlTest;
 
-        // Check if the URL is from a known PeerTube instance
-        const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
+		// Check if the URL is from a known PeerTube instance
+		const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
 
-        // Match PeerTube channel paths:
-        // - /c/{channel}
-        // - /c/{channel}/video
-        // - /c/{channel}/videos
-        // - /video-channels/{channel}
-        // - /video-channels/{channel}/videos
-        // - Allow optional trailing slash
-        const isPeerTubeChannelPath = /^\/(c|video-channels)\/[a-zA-Z0-9-_.]+(\/(video|videos)?)?\/?$/.test(pathname);
+		// Match PeerTube channel paths:
+		// - /c/{channel}
+		// - /c/{channel}/video
+		// - /c/{channel}/videos
+		// - /video-channels/{channel}
+		// - /video-channels/{channel}/videos
+		// - Allow optional trailing slash
+		const isPeerTubeChannelPath = /^\/(c|video-channels)\/[a-zA-Z0-9-_.]+(\/(video|videos)?)?\/?$/.test(pathname);
 
-        return isKnownInstanceUrl && isPeerTubeChannelPath;
-    } catch (error) {
-        console.error('Error checking PeerTube channel URL:', error);
-        return false;
-    }
+		return isKnownInstanceUrl && isPeerTubeChannelPath;
+	} catch (error) {
+		console.error('Error checking PeerTube channel URL:', error);
+		return false;
+	}
 };
 
 
@@ -227,29 +227,29 @@ source.getChannelContents = function (url, type, order, filters) {
 	return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl);
 };
 
-source.isContentDetailsUrl = function(url) {
-    try {
-        if (!url) return false;
+source.isContentDetailsUrl = function (url) {
+	try {
+		if (!url) return false;
 
-        // Check if URL belongs to the base instance and matches content patterns
-        const baseUrl = plugin.config.constants.baseUrl;
-        const isInstanceContentDetails = url.startsWith(`${baseUrl}/videos/watch/`) || url.startsWith(`${baseUrl}/w/`);
-		if(isInstanceContentDetails) return true;
+		// Check if URL belongs to the base instance and matches content patterns
+		const baseUrl = plugin.config.constants.baseUrl;
+		const isInstanceContentDetails = url.startsWith(`${baseUrl}/videos/watch/`) || url.startsWith(`${baseUrl}/w/`);
+		if (isInstanceContentDetails) return true;
 
 		const urlTest = new URL(url);
-        const { host, pathname } = urlTest;
+		const { host, pathname } = urlTest;
 
-        // Check if the path follows a known PeerTube video format
-        const isPeerTubeVideoPath = /^\/(videos\/(watch|embed)|w)\/[a-zA-Z0-9-_]+$/.test(pathname);
+		// Check if the path follows a known PeerTube video format
+		const isPeerTubeVideoPath = /^\/(videos\/(watch|embed)|w)\/[a-zA-Z0-9-_]+$/.test(pathname);
 
-        // Check if the URL is from a known PeerTube instance
-        const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
+		// Check if the URL is from a known PeerTube instance
+		const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
 
-        return isInstanceContentDetails || (isKnownInstanceUrl && isPeerTubeVideoPath);
-    } catch (error) {
-        console.error('Error checking PeerTube content URL:', error);
-        return false;
-    }
+		return isInstanceContentDetails || (isKnownInstanceUrl && isPeerTubeVideoPath);
+	} catch (error) {
+		console.error('Error checking PeerTube content URL:', error);
+		return false;
+	}
 };
 
 
@@ -260,119 +260,119 @@ const supportedResolutions = {
 	'360p': { width: 640, height: 360 },
 	'240p': { width: 426, height: 240 },
 	'144p': { width: 256, height: 144 }
-  };
+};
 
 source.getContentDetails = function (url) {
-	
 
-    // Create video source based on file and resolution
-    function createVideoSource(file, duration) {
-        const supportedResolution = file.resolution.width && file.resolution.height
-            ? { width: file.resolution.width, height: file.resolution.height }
-            : supportedResolutions[file.resolution.label];
 
-        return new VideoUrlSource({
-            name: file.resolution.label,
-            url: file.fileUrl ?? file.fileDownloadUrl,
-            width: supportedResolution?.width,
-            height: supportedResolution?.height,
-            duration: duration,
-            container: "video/mp4"
-        });
-    }
+	// Create video source based on file and resolution
+	function createVideoSource(file, duration) {
+		const supportedResolution = file.resolution.width && file.resolution.height
+			? { width: file.resolution.width, height: file.resolution.height }
+			: supportedResolutions[file.resolution.label];
 
-    // Process files and create sources
-    function processFiles(files, duration) {
-        const sources = [];
-        for (const file of (files ?? [])) {
-            const source = createVideoSource(file, duration);
-            if (source) {
-                sources.push(source);
-            }
-        }
-        return sources;
-    }
+		return new VideoUrlSource({
+			name: file.resolution.label,
+			url: file.fileUrl ?? file.fileDownloadUrl,
+			width: supportedResolution?.width,
+			height: supportedResolution?.height,
+			duration: duration,
+			container: "video/mp4"
+		});
+	}
 
-    try {
-        const videoId = extractVideoId(url);
-        if (!videoId) {
+	// Process files and create sources
+	function processFiles(files, duration) {
+		const sources = [];
+		for (const file of (files ?? [])) {
+			const source = createVideoSource(file, duration);
+			if (source) {
+				sources.push(source);
+			}
+		}
+		return sources;
+	}
+
+	try {
+		const videoId = extractVideoId(url);
+		if (!videoId) {
 			return null;
-        }
-		
+		}
+
 		const sourceBaseUrl = getBaseUrl(url);
-        const urlWithParams = `${sourceBaseUrl}/api/v1/videos/${videoId}`;
-        log("GET " + urlWithParams);    
-        const res = http.GET(urlWithParams, {});
-        if (!res.isOk) {
-            log("Failed to get video detail", res);
-            return null;
-        }
+		const urlWithParams = `${sourceBaseUrl}/api/v1/videos/${videoId}`;
+		log("GET " + urlWithParams);
+		const res = http.GET(urlWithParams, {});
+		if (!res.isOk) {
+			log("Failed to get video detail", res);
+			return null;
+		}
 
-        const obj = JSON.parse(res.body);
-        if (!obj) {
-            log("Failed to parse response");
-            return null;
-        }
+		const obj = JSON.parse(res.body);
+		if (!obj) {
+			log("Failed to parse response");
+			return null;
+		}
 
-        const sources = [];
+		const sources = [];
 
-        // Process streaming playlists
-        for (const playlist of (obj?.streamingPlaylists ?? [])) {
-            sources.push(new HLSSource({
-                name: "HLS",
-                url: playlist.playlistUrl,
-                duration: obj.duration ?? 0,
-                priority: true
-            }));
+		// Process streaming playlists
+		for (const playlist of (obj?.streamingPlaylists ?? [])) {
+			sources.push(new HLSSource({
+				name: "HLS",
+				url: playlist.playlistUrl,
+				duration: obj.duration ?? 0,
+				priority: true
+			}));
 
-            sources.push(...processFiles(playlist?.files, obj.duration));
-        }
+			sources.push(...processFiles(playlist?.files, obj.duration));
+		}
 
-        // Process direct files (older versions)
-        sources.push(...processFiles(obj?.files, obj.duration));
+		// Process direct files (older versions)
+		sources.push(...processFiles(obj?.files, obj.duration));
 
-        //Some older instance versions such as 3.0.0, may not contain the url property
+		//Some older instance versions such as 3.0.0, may not contain the url property
 		const contentUrl = obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`;
-        
-        const result = new PlatformVideoDetails({
-            id: new PlatformID(PLATFORM, obj.uuid, config.id),
-            name: obj.name,
-            thumbnails: new Thumbnails([new Thumbnail(
-                `${sourceBaseUrl}${obj.thumbnailPath}`, 
-                0
-            )]),
-            author: new PlatformAuthorLink(
-                new PlatformID(PLATFORM, obj.channel.name, config.id),
-                obj.channel.displayName,
-                obj.channel.url,
-                getAvatarUrl(obj, sourceBaseUrl)
-            ),
-            datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
-            duration: obj.duration,
-            viewCount: obj.views,
-            url: contentUrl,
-            isLive: obj.isLive,
-            description: obj.description,
-            video: new VideoSourceDescriptor(sources)
-        });
 
-		if(IS_TESTING) {
+		const result = new PlatformVideoDetails({
+			id: new PlatformID(PLATFORM, obj.uuid, config.id),
+			name: obj.name,
+			thumbnails: new Thumbnails([new Thumbnail(
+				`${sourceBaseUrl}${obj.thumbnailPath}`,
+				0
+			)]),
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, obj.channel.name, config.id),
+				obj.channel.displayName,
+				obj.channel.url,
+				getAvatarUrl(obj, sourceBaseUrl)
+			),
+			datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
+			duration: obj.duration,
+			viewCount: obj.views,
+			url: contentUrl,
+			isLive: obj.isLive,
+			description: obj.description,
+			video: new VideoSourceDescriptor(sources)
+		});
+
+		if (IS_TESTING) {
 			source.getContentRecommendations(url, obj);
-		}else {
+		} else {
 			result.getContentRecommendations = function () {
 				return source.getContentRecommendations(url, obj);
 			};
 		}
-		
+
 		return result;
 
-    } catch (err) {
-        throw new ScriptException("Error processing video details", err);
-    }
+	} catch (err) {
+		throw new ScriptException("Error processing video details", err);
+	}
 };
 
 source.getContentRecommendations = function (url, obj) {
-	
+
 	const sourceHost = getBaseUrl(url);
 	const videoId = extractVideoId(url);
 
@@ -397,9 +397,8 @@ source.getContentRecommendations = function (url, obj) {
 	}
 
 	const pager = getVideoPager('/api/v1/search/videos', params, 0, sourceHost, false);
-	
-	pager.results = pager.results.filter(v => v.id.value != videoId);
 
+	pager.results = pager.results.filter(v => v.id.value != videoId);
 	return pager;
 }
 
@@ -408,7 +407,7 @@ source.getComments = function (url) {
 	const sourceBaseUrl = getBaseUrl(url);
 	return getCommentPager(`/api/v1/videos/${videoId}/comment-threads`, {}, 0, sourceBaseUrl);
 }
-source.getSubComments = function(comment) {
+source.getSubComments = function (comment) {
 	return getCommentPager(`/api/v1/videos/${comment.context.id}/comment-threads`, {}, 0);
 }
 
@@ -416,7 +415,7 @@ class PeerTubeVideoPager extends VideoPager {
 	constructor(results, hasMore, path, params, page, sourceHost, isSearch) {
 		super(results, hasMore, { path, params, page, sourceHost, isSearch });
 	}
-	
+
 	nextPage() {
 		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch);
 	}
@@ -426,7 +425,7 @@ class PeerTubeChannelPager extends ChannelPager {
 	constructor(results, hasMore, path, params, page) {
 		super(results, hasMore, { path, params, page });
 	}
-	
+
 	nextPage() {
 		return getChannelPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
 	}
@@ -436,7 +435,7 @@ class PeerTubeCommentPager extends CommentPager {
 	constructor(results, hasMore, path, params, page) {
 		super(results, hasMore, { path, params, page });
 	}
-	
+
 	nextPage() {
 		return getCommentPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
 	}
@@ -451,41 +450,41 @@ function buildQuery(params) {
 	let query = "";
 	let first = true;
 	for (const [key, value] of Object.entries(params)) {
-        // Skip empty values
-        if (!value && value !== 0) continue;
-        
-        // Handle arrays for duplicate parameters
-        if (Array.isArray(value)) {
-            for (const item of value) {
-                if (item || item === 0) {
-                    if (first) {
-                        first = false;
-                    } else {
-                        query += "&";
-                    }
-                    query += `${key}=${encodeURIComponent(item)}`;
-                }
-            }
-        } else {
-            // Handle single values
+		// Skip empty values
+		if (!value && value !== 0) continue;
+
+		// Handle arrays for duplicate parameters
+		if (Array.isArray(value)) {
+			for (const item of value) {
+				if (item || item === 0) {
+					if (first) {
+						first = false;
+					} else {
+						query += "&";
+					}
+					query += `${key}=${encodeURIComponent(item)}`;
+				}
+			}
+		} else {
+			// Handle single values
 			if (first) {
 				first = false;
 			} else {
 				query += "&";
 			}
-            query += `${key}=${encodeURIComponent(value)}`;
+			query += `${key}=${encodeURIComponent(value)}`;
 		}
 	}
 
-	return (query && query.length > 0) ? `?${query}` : ""; 
+	return (query && query.length > 0) ? `?${query}` : "";
 }
 
-function getChannelPager(path, params, page, sourceHost=plugin.config.constants.baseUrl, isSearch=false) {
+function getChannelPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
 	log(`getChannelPager page=${page}`, params)
 
 	const count = 20;
 	const start = (page ?? 0) * count;
-	params = { ... params, start, count }
+	params = { ...params, start, count }
 
 	const url = `${sourceHost}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
@@ -500,13 +499,13 @@ function getChannelPager(path, params, page, sourceHost=plugin.config.constants.
 	const obj = JSON.parse(res.body);
 
 	return new PeerTubeChannelPager(obj.data.map(v => {
-	
-		const instanceBaseUrl = isSearch ? getBaseUrl(v.url) : sourceHost;	
+
+		const instanceBaseUrl = isSearch ? getBaseUrl(v.url) : sourceHost;
 
 		return new PlatformAuthorLink(
-			new PlatformID(PLATFORM, v.name, config.id), 
-			v.displayName, 
-			v.url, 
+			new PlatformID(PLATFORM, v.name, config.id),
+			v.displayName,
+			v.url,
 			getAvatarUrl(v, instanceBaseUrl),
 			v?.followersCount ?? 0
 		);
@@ -514,20 +513,20 @@ function getChannelPager(path, params, page, sourceHost=plugin.config.constants.
 	}), obj.total > (start + count), path, params, page);
 }
 
-function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch=false) {
+function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
 	log(`getVideoPager page=${page}`, params)
 
 	const count = 20;
 	const start = (page ?? 0) * count;
-	params = { ... params, start, count }
+	params = { ...params, start, count }
 
 	const url = `${sourceHost}${path}`;
-	
+
 	const urlWithParams = `${url}${buildQuery(params)}`;
-	
+
 	log("GET " + urlWithParams);
 	const res = http.GET(urlWithParams, {});
-	
+
 
 	if (res.code != 200) {
 		log("Failed to get videos", res);
@@ -559,8 +558,8 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 			name: v.name ?? "",
 			thumbnails: new Thumbnails([new Thumbnail(`${instanceBaseUrl}${v.thumbnailPath}`, 0)]),
 			author: new PlatformAuthorLink(
-				new PlatformID(PLATFORM, v.channel.name, config.id), 
-				v.channel.displayName, 
+				new PlatformID(PLATFORM, v.channel.name, config.id),
+				v.channel.displayName,
 				v.channel.url,
 				getAvatarUrl(v, instanceBaseUrl)
 			),
@@ -573,8 +572,6 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	});
 
-	
-
 	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch);
 }
 
@@ -583,7 +580,7 @@ function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.const
 
 	const count = 20;
 	const start = (page ?? 0) * count;
-	params = { ... params, start, count }
+	params = { ...params, start, count }
 
 	const url = `${sourceBaseUrl}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
@@ -600,89 +597,89 @@ function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.const
 	return new PeerTubeCommentPager(obj.data
 		.filter(v => !v.isDeleted || (v.isDeleted && v.totalReplies > 0)) // filter out deleted comments without replies. TODO: handle soft deleted comments with replies
 		.map(v => {
-		return new Comment({
-			contextUrl: url,
-			author: new PlatformAuthorLink(
-				new PlatformID(PLATFORM, v.account.name, config.id),
-				v.account.displayName, 
-				 `${sourceBaseUrl}/api/v1/video-channels/${v.account.name}`, 
-				 getAvatarUrl(v)
+			return new Comment({
+				contextUrl: url,
+				author: new PlatformAuthorLink(
+					new PlatformID(PLATFORM, v.account.name, config.id),
+					v.account.displayName,
+					`${sourceBaseUrl}/api/v1/video-channels/${v.account.name}`,
+					getAvatarUrl(v)
 				),
-			message: v.text,
-			rating: new RatingLikes(0),
-			date: Math.round((new Date(v.createdAt)).getTime() / 1000),
-			replyCount: v.totalReplies,
-			context: { id: v.id }
-		});
-	}), obj.total > (start + count), path, params, page);
+				message: v.text,
+				rating: new RatingLikes(0),
+				date: Math.round((new Date(v.createdAt)).getTime() / 1000),
+				replyCount: v.totalReplies,
+				context: { id: v.id }
+			});
+		}), obj.total > (start + count), path, params, page);
 }
 
 function extractVersionParts(version) {
 	// Convert to string and trim any 'v' prefix
 	const versionStr = String(version).replace(/^v/, '');
-	
+
 	// Split version into numeric parts
 	const parts = versionStr.split('.').map(part => {
-	  // Ensure each part is a number, default to 0 if not
-	  const num = parseInt(part, 10);
-	  return isNaN(num) ? 0 : num;
+		// Ensure each part is a number, default to 0 if not
+		const num = parseInt(part, 10);
+		return isNaN(num) ? 0 : num;
 	});
-	
+
 	// Pad with zeros to ensure at least 3 parts
 	while (parts.length < 3) {
-	  parts.push(0);
+		parts.push(0);
 	}
-	
+
 	return parts;
-  }
-  
-  function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {
+}
+
+function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {
 	// Handle null or undefined inputs
 	if (testVersion == null || expectedVersion == null) {
-	  return false;
+		return false;
 	}
-	
+
 	// Extract numeric parts of both versions
 	const testParts = extractVersionParts(testVersion);
 	const expectedParts = extractVersionParts(expectedVersion);
-	
+
 	// Compare each part sequentially
 	for (let i = 0; i < 3; i++) {
-	  if (testParts[i] > expectedParts[i]) {
-		return true;  // Current version is newer
-	  }
-	  if (testParts[i] < expectedParts[i]) {
-		return false;  // Current version is older
-	  }
+		if (testParts[i] > expectedParts[i]) {
+			return true;  // Current version is newer
+		}
+		if (testParts[i] < expectedParts[i]) {
+			return false;  // Current version is older
+		}
 	}
-	
-	return true;
-  }
 
-  /** 
- * Find and return the avatar URL from various potential locations to support different Peertube instance versions 
- * @param {object} obj  
- * @returns {String} Avatar URL 
- */ 
-function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) { 
- 
-    const relativePath = [ 
-        obj?.avatar?.path, 
-        obj?.channel?.avatar?.path, 
-        obj?.account?.avatar?.path,// When channel don't have avatar, fallback to account avatar (if one) 
-        obj?.ownerAccount?.avatar?.path, //found in channel details 
-        // Peertube v6.0.0 
-        obj?.avatars?.length ? obj.avatars[obj.avatars.length - 1].path : "",//channel 
-        obj?.channel?.avatars?.length ? obj.channel.avatars[obj.channel.avatars.length - 1].path : "",//Videos details 
-        obj?.account?.avatars?.length ? obj.account.avatars[obj.account.avatars.length - 1].path : "",//comments 
+	return true;
+}
+
+/** 
+* Find and return the avatar URL from various potential locations to support different Peertube instance versions 
+* @param {object} obj  
+* @returns {String} Avatar URL 
+*/
+function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
+
+	const relativePath = [
+		obj?.avatar?.path,
+		obj?.channel?.avatar?.path,
+		obj?.account?.avatar?.path,// When channel don't have avatar, fallback to account avatar (if one) 
+		obj?.ownerAccount?.avatar?.path, //found in channel details 
+		// Peertube v6.0.0 
+		obj?.avatars?.length ? obj.avatars[obj.avatars.length - 1].path : "",//channel 
+		obj?.channel?.avatars?.length ? obj.channel.avatars[obj.channel.avatars.length - 1].path : "",//Videos details 
+		obj?.account?.avatars?.length ? obj.account.avatars[obj.account.avatars.length - 1].path : "",//comments 
 		obj?.ownerAccount?.avatars?.length ? obj.ownerAccount.avatars[obj.ownerAccount.avatars.length - 1].path : ""//channel details 
-    ].find(v => v); // Get the first non-empty value 
- 
-    if (relativePath) { 
-		return `${baseUrl}${relativePath}`; 
-    } 
- 
-    return ""; 
+	].find(v => v); // Get the first non-empty value 
+
+	if (relativePath) {
+		return `${baseUrl}${relativePath}`;
+	}
+
+	return "";
 }
 
 function getBaseUrl(url) {
@@ -694,38 +691,38 @@ function getBaseUrl(url) {
 }
 
 function extractChannelId(url) {
-    try {
-        if (!url) return null;
+	try {
+		if (!url) return null;
 
-        const urlTest = new URL(url);
-        const { pathname } = urlTest;
+		const urlTest = new URL(url);
+		const { pathname } = urlTest;
 
-        // Regex to match and extract the channel ID from both /c/ and /video-channels/ URLs
-        const match = pathname.match(/^\/(c|video-channels)\/([a-zA-Z0-9-_.]+)(?:\/(video|videos)?)?\/?$/);
+		// Regex to match and extract the channel ID from both /c/ and /video-channels/ URLs
+		const match = pathname.match(/^\/(c|video-channels)\/([a-zA-Z0-9-_.]+)(?:\/(video|videos)?)?\/?$/);
 
-        return match ? match[2] : null; // match[2] contains the extracted channel ID
-    } catch (error) {
-        console.error('Error extracting PeerTube channel ID:', error);
-        return null;
-    }
+		return match ? match[2] : null; // match[2] contains the extracted channel ID
+	} catch (error) {
+		console.error('Error extracting PeerTube channel ID:', error);
+		return null;
+	}
 }
 
 
 function extractVideoId(url) {
-    try {
-        if (!url) return null;
+	try {
+		if (!url) return null;
 
-        const urlTest = new URL(url);
-        const { pathname } = urlTest;
+		const urlTest = new URL(url);
+		const { pathname } = urlTest;
 
-        // Regex to match and extract the video ID from various video URL patterns
-        const match = pathname.match(/^\/(videos\/(watch|embed)\/|w\/)([a-zA-Z0-9-_]+)(?:\/.*)?$/);
+		// Regex to match and extract the video ID from various video URL patterns
+		const match = pathname.match(/^\/(videos\/(watch|embed)\/|w\/)([a-zA-Z0-9-_]+)(?:\/.*)?$/);
 
-        return match ? match[3] : null; // match[3] contains the extracted video ID
-    } catch (error) {
-        console.error('Error extracting PeerTube video ID:', error);
-        return null;
-    }
+		return match ? match[3] : null; // match[3] contains the extracted video ID
+	} catch (error) {
+		console.error('Error extracting PeerTube video ID:', error);
+		return null;
+	}
 }
 
 
