@@ -271,15 +271,11 @@ source.getContentDetails = function (url) {
             ? { width: file.resolution.width, height: file.resolution.height }
             : supportedResolutions[file.resolution.label];
 
-        if (!supportedResolution) {
-            return null;
-        }
-
         return new VideoUrlSource({
             name: file.resolution.label,
             url: file.fileUrl ?? file.fileDownloadUrl,
-            width: supportedResolution.width,
-            height: supportedResolution.height,
+            width: supportedResolution?.width,
+            height: supportedResolution?.height,
             duration: duration,
             container: "video/mp4"
         });
@@ -393,7 +389,7 @@ source.getContentRecommendations = function (url, obj) {
 	}
 
 	const params = {
-		skipCount: true,
+		skipCount: false,
 		nsfw: false,
 		tagsOneOf,
 		sort: "-publishedAt",
