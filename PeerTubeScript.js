@@ -378,14 +378,11 @@ source.getContentDetails = function (url) {
 source.getContentRecommendations = function (url, obj) {
 	
 	const sourceHost = getBaseUrl(url);
+	const videoId = extractVideoId(url);
+
 	let tagsOneOf = obj?.tags ?? [];
 
-	if (!obj) {
-
-		const videoId = extractVideoId(url);
-		if (!videoId) {
-			return null;
-		}
+	if (!obj && videoId) {
 		const res = http.GET(`${sourceHost}/api/v1/videos/${videoId}`, {});
 		if (res.isOk) {
 			const obj = JSON.parse(res.body);
@@ -403,7 +400,11 @@ source.getContentRecommendations = function (url, obj) {
 		searchTarget: "local"
 	}
 
-	return getVideoPager('/api/v1/search/videos', params, 0, sourceHost, false);
+	const pager = getVideoPager('/api/v1/search/videos', params, 0, sourceHost, false);
+	
+	pager.results = pager.results.filter(v => v.id.value != videoId);
+
+	return pager;
 }
 
 source.getComments = function (url) {
