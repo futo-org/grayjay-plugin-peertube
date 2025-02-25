@@ -338,7 +338,7 @@ source.getContentDetails = function (url) {
         //Some older instance versions such as 3.0.0, may not contain the url property
 		const contentUrl = obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`;
         
-        return new PlatformVideoDetails({
+        const result = new PlatformVideoDetails({
             id: new PlatformID(PLATFORM, obj.uuid, config.id),
             name: obj.name,
             thumbnails: new Thumbnails([new Thumbnail(
@@ -359,10 +359,52 @@ source.getContentDetails = function (url) {
             description: obj.description,
             video: new VideoSourceDescriptor(sources)
         });
+
+		if(IS_TESTING) {
+			source.getContentRecommendations(url, obj);
+		}else {
+			result.getContentRecommendations = function () {
+				return source.getContentRecommendations(url, obj);
+			};
+		}
+		
+		return result;
+
     } catch (err) {
         throw new ScriptException("Error processing video details", err);
     }
 };
+
+source.getContentRecommendations = function (url, obj) {
+	
+	const sourceHost = getBaseUrl(url);
+	let tagsOneOf = obj?.tags ?? [];
+
+	if (!obj) {
+
+		const videoId = extractVideoId(url);
+		if (!videoId) {
+			return null;
+		}
+		const res = http.GET(`${sourceHost}/api/v1/videos/${videoId}`, {});
+		if (res.isOk) {
+			const obj = JSON.parse(res.body);
+			if (obj) {
+				tagsOneOf = obj?.tags ?? []
+			}
+		}
+	}
+
+	const params = {
+		skipCount: true,
+		nsfw: false,
+		tagsOneOf,
+		sort: "-publishedAt",
+		searchTarget: "local"
+	}
+
+	return getVideoPager('/api/v1/search/videos', params, 0, sourceHost, false);
+}
 
 source.getComments = function (url) {
 	const videoId = extractVideoId(url);
@@ -412,14 +454,29 @@ function buildQuery(params) {
 	let query = "";
 	let first = true;
 	for (const [key, value] of Object.entries(params)) {
-		if (value) {
+        // Skip empty values
+        if (!value && value !== 0) continue;
+        
+        // Handle arrays for duplicate parameters
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                if (item || item === 0) {
+                    if (first) {
+                        first = false;
+                    } else {
+                        query += "&";
+                    }
+                    query += `${key}=${encodeURIComponent(item)}`;
+                }
+            }
+        } else {
+            // Handle single values
 			if (first) {
 				first = false;
 			} else {
 				query += "&";
 			}
-
-			query += `${key}=${value}`;
+            query += `${key}=${encodeURIComponent(value)}`;
 		}
 	}
 
@@ -493,7 +550,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 			v?.thumbnailUrl,
 			v?.account?.url,
 			v?.channel?.url
-		].filter(a => a).map(getBaseUrl).find(a => a);
+		].filter(Boolean).map(getBaseUrl).find(Boolean);
 
 		//Some older instance versions such as 3.0.0, may not contain the url property
 		const contentUrl = v.url || `${baseUrl}/videos/watch/${v.uuid}`;
