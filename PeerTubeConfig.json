@@ -7,7 +7,7 @@
 	"sourceUrl": "https://plugins.grayjay.app/PeerTube/PeerTubeConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/peertube",
 	"scriptUrl": "./PeerTubeScript.js",
-	"version": 18,
+	"version": 19,
 	"iconUrl": "./peertube.png",
 	"id": "1c291164-294c-4c2d-800d-7bc6d31d0019",
 	
@@ -35,6 +35,9 @@
 			"Sync known instances from https://instances.joinpeertube.org and user requests;",
 			"Fix playback issues for some videos;",
 			"Add recommendations support;"
+		],
+		"19" : [
+			"Sync known instances with https://instances.joinpeertube.org"
 		]
 	},
 	"constants": {
