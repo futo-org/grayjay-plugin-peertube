@@ -32,6 +32,7 @@ source.enable = function (conf, settings, saveStateStr) {
 		}
 
 		_settings.searchEngineIndex = 0; //Current Instance
+		_settings.submitActivity = true;
 	}
 
 	state.isSearchEngineSepiaSearch = SEARCH_ENGINE_OPTIONS[_settings.searchEngineIndex] == 'Sepia Search'
@@ -409,6 +410,106 @@ source.getComments = function (url) {
 }
 source.getSubComments = function (comment) {
 	return getCommentPager(`/api/v1/videos/${comment.context.id}/comment-threads`, {}, 0);
+}
+
+
+// Add PlaybackTracker implementation
+source.getPlaybackTracker = function (url) {
+
+	if (!_settings.submitActivity) {
+		return null;
+	}
+
+	const videoId = extractVideoId(url);
+	if (!videoId) {
+		return null;
+	}
+	
+	const sourceBaseUrl = getBaseUrl(url);
+	
+	return new PeerTubePlaybackTracker(videoId, sourceBaseUrl);
+
+};
+
+//https://docs.joinpeertube.org/api-rest-reference.html#tag/Video/operation/addView
+class PeerTubePlaybackTracker extends PlaybackTracker {
+	/**
+	 * Creates a new PeerTube playback tracker
+	 * @param {string} videoId - The ID of the video
+	 * @param {string} baseUrl - The base URL of the PeerTube instance
+	 */
+	constructor(videoId, baseUrl) {
+		// Send update approximately every 5 seconds
+		super(5000);
+		this.videoId = videoId;
+		this.baseUrl = baseUrl;
+		this.lastReportedTime = 0;
+		this.seekOccurred = false;
+	}
+
+	/**
+	 * Called when tracking is initialized with the current position
+	 * @param {number} seconds - Current position in seconds
+	 */
+	onInit(seconds) {
+		this.lastReportedTime = Math.floor(seconds);
+		this.reportView(this.lastReportedTime);
+	}
+
+	/**
+	 * Called periodically when video is playing
+	 * @param {number} seconds - Current position in seconds
+	 * @param {boolean} isPlaying - Whether the video is currently playing
+	 */
+	onProgress(seconds, isPlaying) {
+		
+		if (!isPlaying) return;
+		
+		const currentTime = Math.floor(seconds);
+
+		// Detect if a seek has occurred (non-continuous playback)
+		if (Math.abs(currentTime - this.lastReportedTime) > 10) {
+			this.seekOccurred = true;
+		}
+
+		this.lastReportedTime = currentTime;
+		this.reportView(currentTime);
+	}
+
+	/**
+	 * Called when playback concludes
+	 */
+	onConcluded() {
+		// Send a final view report
+		this.reportView(this.lastReportedTime);
+	}
+
+	/**
+	 * Reports the current view status to the PeerTube server
+	 * @param {number} currentTime - Current position in seconds
+	 */
+	reportView(currentTime) {
+		// https://docs.joinpeertube.org/api-rest-reference.html#tag/Video/operation/addView
+		const url = `${this.baseUrl}/api/v1/videos/${this.videoId}/views`;
+
+		const body = {
+			currentTime,
+			client: "GrayJay.app",
+			// device: "mobile",
+			// operatingSystem: "Android",
+			// sessionId: this.sessionId
+		};
+
+		// Add viewEvent if a seek occurred
+		if (this.seekOccurred) {
+			body.viewEvent = "seek";
+			this.seekOccurred = false;
+		}
+
+		http.POST(url, JSON.stringify(body), {
+			"Content-Type": "application/json"
+		}, false);
+	}
 }
 
 class PeerTubeVideoPager extends VideoPager {
