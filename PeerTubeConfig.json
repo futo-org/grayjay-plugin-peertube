@@ -40,7 +40,8 @@
 			"Sync known instances with https://instances.joinpeertube.org"
 		],
 		"20" : [
-			"Add view reporting to PeerTube instances with a plugin setting to disable it."
+			"Add view reporting to PeerTube instances with a plugin setting to disable it.",
+			"Sync known instances with https://instances.joinpeertube.org"
 		]
 	},
 	"constants": {
