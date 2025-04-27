@@ -44,7 +44,8 @@
 			"Sync known instances with https://instances.joinpeertube.org"
 		],
 		"21" : [
-			"Fix resolving instances with ports;"
+			"Fix resolving instances with ports;",
+			"Sync known instances with https://instances.joinpeertube.org"
 		]
 	},
 	"constants": {
