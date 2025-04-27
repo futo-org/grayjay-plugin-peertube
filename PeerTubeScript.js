@@ -783,12 +783,62 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 	return "";
 }
 
+/**
+ * Extracts the base URL (protocol + host) from a given URL string.
+ * Validates input and throws appropriate exceptions for invalid URLs.
+ * 
+ * @param {string} url - The URL to extract the base from
+ * @returns {string} - The base URL (protocol + host)
+ * @throws {ScriptException} - If input is not a string, is empty, or is not a valid URL
+ * @throws {ScriptException} - If the URL doesn't contain a valid host or protocol
+ * @example
+ * // Returns "https://example.com"
+ * getBaseUrl("https://example.com/path/to/page?query=123");
+ * 
+ * // Throws ScriptException: "URL must be a string"
+ * getBaseUrl(null);
+ * 
+ * // Throws ScriptException: "Invalid URL format: invalid-url"
+ * getBaseUrl("invalid-url");
+ */
 function getBaseUrl(url) {
-	const urlTest = new URL(url);
-	const host = urlTest?.host || '';
-	const protocol = urlTest?.protocol || '';
-	const port = urlTest?.port ? `:${urlTest?.port}` : ''
-	return `${protocol}//${host}${port}`;
+
+
+    if (typeof url !== 'string') {
+        throw new ScriptException('URL must be a string');
+    }
+    
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
+        throw new ScriptException('URL cannot be empty');
+    }
+    
+    try {
+        // Try to create a URL object
+        const urlTest = new URL(trimmedUrl);
+        
+        const host = urlTest.host;
+        const protocol = urlTest.protocol;
+        
+        // Check if both host and protocol exist
+        if (!host) {
+            throw new ScriptException(`URL must contain a valid host: ${url}`);
+        }
+        
+        if (!protocol) {
+            throw new ScriptException(`URL must contain a valid protocol: ${url}`);
+        }
+        
+        return `${protocol}//${host}`;
+    } catch (error) {
+        // If the error is already our ScriptException, rethrow it
+        if (error instanceof ScriptException) {
+            throw error;
+        }
+        
+        // Otherwise, create a new ScriptException for URL parsing errors
+        throw new ScriptException(`Invalid URL format: ${url}`);
+    }
 }
 
 function extractChannelId(url) {
