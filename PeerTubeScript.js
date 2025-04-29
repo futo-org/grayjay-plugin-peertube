@@ -382,7 +382,7 @@ source.getContentDetails = function (url) {
 			url: contentUrl,
 			isLive: obj.isLive,
 			description: obj.description,
-			video: new UnmuxVideoSourceDescriptor(video_sources, audio_sources)
+			video: new UnMuxVideoSourceDescriptor(video_sources, audio_sources)
 		});
 
 		if (IS_TESTING) {
