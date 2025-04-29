@@ -282,11 +282,34 @@ source.getContentDetails = function (url) {
 		});
 	}
 
+	function createAudioSource(file, duration) {
+		
+		return new AudioUrlSource({
+			name: file.resolution.label,
+			url: file.fileUrl ?? file.fileDownloadUrl,
+			duration: duration,
+			container: "audio/mp3",
+			codec: "mp4a.40.2"
+		});
+	}
+
 	// Process files and create sources
-	function processFiles(files, duration) {
+	function processVideoFiles(files, duration) {
 		const sources = [];
 		for (const file of (files ?? [])) {
 			const source = createVideoSource(file, duration);
+			if (source) {
+				sources.push(source);
+			}
+		}
+		return sources;
+	}
+
+	function processAudioFiles(files, duration) {
+		const sources = [];
+		for (const file of (files ?? [])) {
+			
+			const source = createAudioSource(file, duration);
 			if (source) {
 				sources.push(source);
 			}
@@ -315,22 +338,27 @@ source.getContentDetails = function (url) {
 			return null;
 		}
 
-		const sources = [];
+		const video_sources = [];
+		const audio_sources = [];
 
 		// Process streaming playlists
 		for (const playlist of (obj?.streamingPlaylists ?? [])) {
-			sources.push(new HLSSource({
+			video_sources.push(new HLSSource({
 				name: "HLS",
 				url: playlist.playlistUrl,
 				duration: obj.duration ?? 0,
 				priority: true
 			}));
 
-			sources.push(...processFiles(playlist?.files, obj.duration));
+			const video_files = playlist?.files.filter(f => f.resolution.label !== "Audio");
+			const audio_files = playlist?.files.filter(f => f.resolution.label === "Audio");
+
+			video_sources.push(...processVideoFiles(video_files, obj.duration));
+			audio_sources.push(...processAudioFiles(audio_files, obj.duration));
 		}
 
 		// Process direct files (older versions)
-		sources.push(...processFiles(obj?.files, obj.duration));
+		video_sources.push(...processVideoFiles(obj?.files, obj.duration));
 
 		//Some older instance versions such as 3.0.0, may not contain the url property
 		const contentUrl = obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`;
@@ -354,7 +382,7 @@ source.getContentDetails = function (url) {
 			url: contentUrl,
 			isLive: obj.isLive,
 			description: obj.description,
-			video: new VideoSourceDescriptor(sources)
+			video: new UnmuxVideoSourceDescriptor(video_sources, audio_sources)
 		});
 
 		if (IS_TESTING) {
