@@ -8,6 +8,15 @@ let state = {
 	isSearchEngineSepiaSearch: false
 }
 
+const supportedResolutions = {
+	'1080p': { width: 1920, height: 1080 },
+	'720p': { width: 1280, height: 720 },
+	'480p': { width: 854, height: 480 },
+	'360p': { width: 640, height: 360 },
+	'240p': { width: 426, height: 240 },
+	'144p': { width: 256, height: 144 }
+};
+
 // instances are populated during deploy appended to the end of this javascript file
 // this update process is done at update-instances.sh
 let INDEX_INSTANCES = {
@@ -254,68 +263,10 @@ source.isContentDetailsUrl = function (url) {
 };
 
 
-const supportedResolutions = {
-	'1080p': { width: 1920, height: 1080 },
-	'720p': { width: 1280, height: 720 },
-	'480p': { width: 854, height: 480 },
-	'360p': { width: 640, height: 360 },
-	'240p': { width: 426, height: 240 },
-	'144p': { width: 256, height: 144 }
-};
 
 source.getContentDetails = function (url) {
 
 
-	// Create video source based on file and resolution
-	function createVideoSource(file, duration) {
-		const supportedResolution = file.resolution.width && file.resolution.height
-			? { width: file.resolution.width, height: file.resolution.height }
-			: supportedResolutions[file.resolution.label];
-
-		return new VideoUrlSource({
-			name: file.resolution.label,
-			url: file.fileUrl ?? file.fileDownloadUrl,
-			width: supportedResolution?.width,
-			height: supportedResolution?.height,
-			duration: duration,
-			container: "video/mp4"
-		});
-	}
-
-	function createAudioSource(file, duration) {
-		
-		return new AudioUrlSource({
-			name: file.resolution.label,
-			url: file.fileUrl ?? file.fileDownloadUrl,
-			duration: duration,
-			container: "audio/mp3",
-			codec: "mp4a.40.2"
-		});
-	}
-
-	// Process files and create sources
-	function processVideoFiles(files, duration) {
-		const sources = [];
-		for (const file of (files ?? [])) {
-			const source = createVideoSource(file, duration);
-			if (source) {
-				sources.push(source);
-			}
-		}
-		return sources;
-	}
-
-	function processAudioFiles(files, duration) {
-		const sources = [];
-		for (const file of (files ?? [])) {
-			
-			const source = createAudioSource(file, duration);
-			if (source) {
-				sources.push(source);
-			}
-		}
-		return sources;
-	}
 
 	try {
 		const videoId = extractVideoId(url);
@@ -325,7 +276,6 @@ source.getContentDetails = function (url) {
 
 		const sourceBaseUrl = getBaseUrl(url);
 		const urlWithParams = `${sourceBaseUrl}/api/v1/videos/${videoId}`;
-		log("GET " + urlWithParams);
 		const res = http.GET(urlWithParams, {});
 		if (!res.isOk) {
 			log("Failed to get video detail", res);
@@ -337,28 +287,6 @@ source.getContentDetails = function (url) {
 			log("Failed to parse response");
 			return null;
 		}
-
-		const video_sources = [];
-		const audio_sources = [];
-
-		// Process streaming playlists
-		for (const playlist of (obj?.streamingPlaylists ?? [])) {
-			video_sources.push(new HLSSource({
-				name: "HLS",
-				url: playlist.playlistUrl,
-				duration: obj.duration ?? 0,
-				priority: true
-			}));
-
-			const video_files = playlist?.files.filter(f => f.resolution.label !== "Audio");
-			const audio_files = playlist?.files.filter(f => f.resolution.label === "Audio");
-
-			video_sources.push(...processVideoFiles(video_files, obj.duration));
-			audio_sources.push(...processAudioFiles(audio_files, obj.duration));
-		}
-
-		// Process direct files (older versions)
-		video_sources.push(...processVideoFiles(obj?.files, obj.duration));
 
 		//Some older instance versions such as 3.0.0, may not contain the url property
 		const contentUrl = obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`;
@@ -382,7 +310,7 @@ source.getContentDetails = function (url) {
 			url: contentUrl,
 			isLive: obj.isLive,
 			description: obj.description,
-			video: new UnMuxVideoSourceDescriptor(video_sources, audio_sources)
+			video: getMediaDescriptor(obj)
 		});
 
 		if (IS_TESTING) {
@@ -653,7 +581,6 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	const urlWithParams = `${url}${buildQuery(params)}`;
 
-	log("GET " + urlWithParams);
 	const res = http.GET(urlWithParams, {});
 
 
@@ -909,6 +836,99 @@ function loadOptionsForSetting(settingKey, transformCallback) {
 	transformCallback ??= (o) => o;
 	const setting = config?.settings?.find((s) => s.variable == settingKey);
 	return setting?.options?.map(transformCallback) ?? [];
+}
+
+
+function createAudioSource(file, duration) {
+	return new AudioUrlSource({
+		name: file.resolution.label,
+		url: file.fileUrl ?? file.fileDownloadUrl,
+		duration: duration,
+		container: "audio/mp3",
+		codec: "aac"
+	});
+}
+
+// Create video source based on file and resolution
+function createVideoSource(file, duration) {
+	const supportedResolution = file.resolution.width && file.resolution.height
+		? { width: file.resolution.width, height: file.resolution.height }
+		: supportedResolutions[file.resolution.label];
+		
+	return new VideoUrlSource({
+		name: file.resolution.label,
+		url: file.fileUrl ?? file.fileDownloadUrl,
+		width: supportedResolution?.width,
+		height: supportedResolution?.height,
+		duration: duration,
+		container: "video/mp4"
+	});
+}
+
+function getMediaDescriptor(obj) {
+
+	let inputFileSources = [];
+
+	const hlsOutputSources = [];
+
+	const muxedVideoOutputSources = [];
+	const unMuxedVideoOnlyOutputSources = [];
+	const unMuxedAudioOnlyOutputSources = [];
+
+	for (const playlist of (obj?.streamingPlaylists ?? [])) {
+
+		hlsOutputSources.push(new HLSSource({
+			name: "HLS",
+			url: playlist.playlistUrl,
+			duration: obj.duration ?? 0,
+			priority: true
+		}));
+
+		(playlist?.files ?? []).forEach((file) => {
+			inputFileSources.push(file);
+		});
+	}
+
+	(obj?.files ?? []).forEach((file) => {
+		inputFileSources.push(file);
+	});
+
+	for (const file of inputFileSources) {
+		const isAudioOnly = (file.hasAudio == undefined && file.hasVideo == undefined && file.resolution.id === 0) || (file.hasAudio && !file.hasVideo);
+
+		if (isAudioOnly) {
+			unMuxedAudioOnlyOutputSources.push(createAudioSource(file, obj.duration));
+		}
+
+		const isMuxedVideo = (file.hasAudio == undefined && file.hasVideo == undefined && file.resolution.id !== 0) || (file.hasAudio && file.hasVideo);
+		if (isMuxedVideo) {
+			muxedVideoOutputSources.push(createVideoSource(file, obj.duration));
+		}
+
+		const isUnMuxedVideoOnly = (!file.hasAudio && file.hasVideo);
+		if (isUnMuxedVideoOnly) {
+			unMuxedVideoOnlyOutputSources.push(createVideoSource(file, obj.duration));
+		}
+	}
+
+	const isAudioMode = !unMuxedVideoOnlyOutputSources.length
+		&& !muxedVideoOutputSources.length
+		&& !hlsOutputSources.length;
+
+	if (isAudioMode) {
+		return new UnMuxVideoSourceDescriptor([], unMuxedAudioOnlyOutputSources);
+	} else {
+
+		if (hlsOutputSources.length && !unMuxedVideoOnlyOutputSources.length) {
+			return new VideoSourceDescriptor(hlsOutputSources);
+		}
+		else if (muxedVideoOutputSources.length) {
+			return new VideoSourceDescriptor(muxedVideoOutputSources);
+		}
+		else if (unMuxedVideoOnlyOutputSources.length && unMuxedAudioOnlyOutputSources.length) {
+			return new UnMuxVideoSourceDescriptor(unMuxedVideoOnlyOutputSources, unMuxedAudioOnlyOutputSources);
+		}
+	}
 }
 
 // Those instances were requested by users
