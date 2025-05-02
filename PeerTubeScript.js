@@ -269,67 +269,59 @@ source.isContentDetailsUrl = function (url) {
 
 
 source.getContentDetails = function (url) {
-
-
-
-	try {
-		const videoId = extractVideoId(url);
-		if (!videoId) {
-			return null;
-		}
-
-		const sourceBaseUrl = getBaseUrl(url);
-		const urlWithParams = `${sourceBaseUrl}/api/v1/videos/${videoId}`;
-		const res = http.GET(urlWithParams, {});
-		if (!res.isOk) {
-			log("Failed to get video detail", res);
-			return null;
-		}
-
-		const obj = JSON.parse(res.body);
-		if (!obj) {
-			log("Failed to parse response");
-			return null;
-		}
-
-		//Some older instance versions such as 3.0.0, may not contain the url property
-		const contentUrl = obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`;
-
-		const result = new PlatformVideoDetails({
-			id: new PlatformID(PLATFORM, obj.uuid, config.id),
-			name: obj.name,
-			thumbnails: new Thumbnails([new Thumbnail(
-				`${sourceBaseUrl}${obj.thumbnailPath}`,
-				0
-			)]),
-			author: new PlatformAuthorLink(
-				new PlatformID(PLATFORM, obj.channel.name, config.id),
-				obj.channel.displayName,
-				obj.channel.url,
-				getAvatarUrl(obj, sourceBaseUrl)
-			),
-			datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
-			duration: obj.duration,
-			viewCount: obj.views,
-			url: contentUrl,
-			isLive: obj.isLive,
-			description: obj.description,
-			video: getMediaDescriptor(obj)
-		});
-
-		if (IS_TESTING) {
-			source.getContentRecommendations(url, obj);
-		} else {
-			result.getContentRecommendations = function () {
-				return source.getContentRecommendations(url, obj);
-			};
-		}
-
-		return result;
-
-	} catch (err) {
-		throw new ScriptException("Error processing video details", err);
+	const videoId = extractVideoId(url);
+	if (!videoId) {
+		return null;
 	}
+
+	const sourceBaseUrl = getBaseUrl(url);
+	const urlWithParams = `${sourceBaseUrl}/api/v1/videos/${videoId}`;
+	const res = http.GET(urlWithParams, {});
+	if (!res.isOk) {
+		log("Failed to get video detail", res);
+		return null;
+	}
+
+	const obj = JSON.parse(res.body);
+	if (!obj) {
+		log("Failed to parse response");
+		return null;
+	}
+
+	//Some older instance versions such as 3.0.0, may not contain the url property
+	const contentUrl = obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`;
+
+	const result = new PlatformVideoDetails({
+		id: new PlatformID(PLATFORM, obj.uuid, config.id),
+		name: obj.name,
+		thumbnails: new Thumbnails([new Thumbnail(
+			`${sourceBaseUrl}${obj.thumbnailPath}`,
+			0
+		)]),
+		author: new PlatformAuthorLink(
+			new PlatformID(PLATFORM, obj.channel.name, config.id),
+			obj.channel.displayName,
+			obj.channel.url,
+			getAvatarUrl(obj, sourceBaseUrl)
+		),
+		datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
+		duration: obj.duration,
+		viewCount: obj.views,
+		url: contentUrl,
+		isLive: obj.isLive,
+		description: obj.description,
+		video: getMediaDescriptor(obj)
+	});
+
+	if (IS_TESTING) {
+		source.getContentRecommendations(url, obj);
+	} else {
+		result.getContentRecommendations = function () {
+			return source.getContentRecommendations(url, obj);
+		};
+	}
+
+	return result;
 };
 
 source.getContentRecommendations = function (url, obj) {
