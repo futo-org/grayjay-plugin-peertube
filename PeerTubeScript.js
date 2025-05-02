@@ -17,6 +17,10 @@ const supportedResolutions = {
 	'144p': { width: 256, height: 144 }
 };
 
+const URLS = {
+	PEERTUBE_LOGO: "https://plugins.grayjay.app/PeerTube/peertube.png"
+}
+
 // instances are populated during deploy appended to the end of this javascript file
 // this update process is done at update-instances.sh
 let INDEX_INSTANCES = {
@@ -735,7 +739,7 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 		return `${baseUrl}${relativePath}`;
 	}
 
-	return "";
+	return URLS.PEERTUBE_LOGO;
 }
 
 /**
