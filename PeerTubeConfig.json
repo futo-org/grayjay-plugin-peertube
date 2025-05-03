@@ -47,8 +47,9 @@
 			"Fix resolving instances with ports;",
 			"Sync known instances with https://instances.joinpeertube.org"
 		],
-    "22" : [
-			"Improve handling media sources with audio only, and videos with split audio and video"
+		"22" : [
+			"Add subtitles support (when available)",
+			"Improve handling media sources with audio only, and videos with split audio and video",
 		]
 	},
 	"constants": {

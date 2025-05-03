@@ -266,6 +266,38 @@ source.isContentDetailsUrl = function (url) {
 
 
 
+/**
+ * Processes captions data from API response into GrayJay subtitle format
+ * @param {Object} captionsResponse - HTTP response containing captions data
+ * @returns {Array} - Array of subtitle objects or empty array if none available
+ */
+function processSubtitlesData(captionsResponse) {
+	if (!captionsResponse.isOk) {
+		log("Failed to get video subtitles", captionsResponse);
+		return [];
+	}
+	
+	try {
+		const captionsData = JSON.parse(captionsResponse.body);
+		if (!captionsData || !captionsData.data || captionsData.total === 0) {
+			return [];
+		}
+		
+		// Convert PeerTube captions to GrayJay subtitle format
+		return captionsData.data.map(caption => {
+			return {
+				name: `${caption?.language?.label ?? caption?.language?.id} ${caption.automaticallyGenerated ? "(auto-generated)" : ""}`,
+				url: caption.fileUrl,
+				format: "text/vtt",
+				language: caption.language.id
+			};
+		});
+	} catch (e) {
+		log("Error parsing captions data", e);
+		return [];
+	}
+}
+
 source.getContentDetails = function (url) {
 	const videoId = extractVideoId(url);
 	if (!videoId) {
@@ -273,14 +305,19 @@ source.getContentDetails = function (url) {
 	}
 
 	const sourceBaseUrl = getBaseUrl(url);
-	const urlWithParams = `${sourceBaseUrl}/api/v1/videos/${videoId}`;
-	const res = http.GET(urlWithParams, {});
-	if (!res.isOk) {
-		log("Failed to get video detail", res);
+	
+	// Create a batch request for both video details and captions
+	const [videoDetails, captionsData] = http.batch()
+		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, {})
+		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`, {})
+		.execute();
+	
+	if (!videoDetails.isOk) {
+		log("Failed to get video detail", videoDetails);
 		return null;
 	}
 
-	const obj = JSON.parse(res.body);
+	const obj = JSON.parse(videoDetails.body);
 	if (!obj) {
 		log("Failed to parse response");
 		return null;
@@ -288,6 +325,9 @@ source.getContentDetails = function (url) {
 
 	//Some older instance versions such as 3.0.0, may not contain the url property
 	const contentUrl = obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`;
+	
+	// Process subtitles data
+	const subtitles = processSubtitlesData(captionsData);
 
 	const result = new PlatformVideoDetails({
 		id: new PlatformID(PLATFORM, obj.uuid, config.id),
@@ -308,7 +348,8 @@ source.getContentDetails = function (url) {
 		url: contentUrl,
 		isLive: obj.isLive,
 		description: obj.description,
-		video: getMediaDescriptor(obj)
+		video: getMediaDescriptor(obj),
+		subtitles: subtitles
 	});
 
 	if (IS_TESTING) {
