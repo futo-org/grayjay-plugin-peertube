@@ -152,8 +152,6 @@ source.searchChannels = function (query) {
 source.isChannelUrl = function (url) {
 	try {
 
-		log(`isChannel: ${url}`)
-
 		if (!url) return false;
 
 		// Check if the URL belongs to the base instance
@@ -191,7 +189,7 @@ source.getChannel = function (url) {
 	const sourceBaseUrl = getBaseUrl(url);
 
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-channels/${handle}`;
-	log("GET " + urlWithParams);
+
 	const res = http.GET(urlWithParams, {});
 
 	if (res.code != 200) {
@@ -533,7 +531,6 @@ function buildQuery(params) {
 }
 
 function getChannelPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
-	log(`getChannelPager page=${page}`, params)
 
 	const count = 20;
 	const start = (page ?? 0) * count;
@@ -541,7 +538,7 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 
 	const url = `${sourceHost}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
-	log("GET " + urlWithParams);
+
 	const res = http.GET(urlWithParams, {});
 
 	if (res.code != 200) {
@@ -567,7 +564,6 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 }
 
 function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
-	log(`getVideoPager page=${page}`, params)
 
 	const count = 20;
 	const start = (page ?? 0) * count;
@@ -628,7 +624,6 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 }
 
 function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
-	log(`getCommentPager page=${page}`, params)
 
 	const count = 20;
 	const start = (page ?? 0) * count;
@@ -636,7 +631,6 @@ function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.const
 
 	const url = `${sourceBaseUrl}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
-	log("GET " + urlWithParams);
 	const res = http.GET(urlWithParams, {});
 
 	if (res.code != 200) {
@@ -880,9 +874,11 @@ function getMediaDescriptor(obj) {
 			priority: true
 		}));
 
-		(playlist?.files ?? []).forEach((file) => {
-			inputFileSources.push(file);
-		});
+		// exclude transcoded files for now due to some incompatibility issues (no length metadata (invalid duration on android devices) and performance issues loading the files on desktop
+		// those are the same videos used for HLS
+		// (playlist?.files ?? []).forEach((file) => {
+		// 	inputFileSources.push(file);
+		// });
 	}
 
 	(obj?.files ?? []).forEach((file) => {
