@@ -48,12 +48,12 @@
 			"Sync known instances with https://instances.joinpeertube.org"
 		],
 		"22" : [
-			"- Add support for channel playlists;",
-			"- Search online playlists on the playlist tab using current instance or Sepia Search;",
-			"- Add subtitles support (when available);",
-			"- Improve handling media sources with audio only, and videos with split audio and video;",
-			"- Improved URL recognition with hints for all content types;",
-			"- Add likes and dislikes display for videos;"
+			"Add support for channel playlists;",
+			"Search online playlists on the playlist tab using current instance or Sepia Search;",
+			"Add subtitles support (when available);",
+			"Improve handling media sources with audio only, and videos with split audio and video;",
+			"Improved URL recognition with hints for all content types;",
+			"Add likes and dislikes display for videos;"
 		]
 	},
 	"constants": {
