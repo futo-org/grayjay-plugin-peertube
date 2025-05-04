@@ -173,8 +173,12 @@ source.searchPlaylists = function (query) {
 
 source.isChannelUrl = function (url) {
 	try {
-
 		if (!url) return false;
+
+		// Check for URL hint
+		if (url.includes('isPeertubeChannel=1')) {
+			return true;
+		}
 
 		// Check if the URL belongs to the base instance
 		const baseUrl = plugin.config.constants.baseUrl;
@@ -182,17 +186,22 @@ source.isChannelUrl = function (url) {
 		if (isInstanceChannel) return true;
 
 		const urlTest = new URL(url);
-		const { host, pathname } = urlTest;
+		const { host, pathname, searchParams } = urlTest;
+
+		// Check for URL hint in searchParams
+		if (searchParams.has('isPeertubeChannel')) {
+			return true;
+		}
 
 		// Check if the URL is from a known PeerTube instance
 		const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
 
 		// Match PeerTube channel paths:
-		// - /c/{channel}
-		// - /c/{channel}/video
-		// - /c/{channel}/videos
-		// - /video-channels/{channel}
-		// - /video-channels/{channel}/videos
+		// - /c/{channel} - Short form channel URL
+		// - /c/{channel}/videos - Channel videos listing
+		// - /c/{channel}/video - Alternate channel videos listing
+		// - /video-channels/{channel} - Long form channel URL
+		// - /video-channels/{channel}/videos - Channel videos listing
 		// - Allow optional trailing slash
 		const isPeerTubeChannelPath = /^\/(c|video-channels)\/[a-zA-Z0-9-_.]+(\/(video|videos)?)?\/?$/.test(pathname);
 
@@ -225,6 +234,9 @@ source.getChannel = function (url) {
 
 	const obj = JSON.parse(res.body);
 
+	// Add URL hint using utility function
+	const channelUrl = addChannelUrlHint(obj.url || `${sourceBaseUrl}/video-channels/${handle}`);
+	
 	return new PlatformChannel({
 		id: new PlatformID(PLATFORM, obj.name, config.id),
 		name: obj.displayName || obj.name || handle,
@@ -232,7 +244,7 @@ source.getChannel = function (url) {
 		banner: null,
 		subscribers: obj.followersCount || 0,
 		description: obj.description ?? "",
-		url: obj.url || `${sourceBaseUrl}/video-channels/${handle}`,
+		url: channelUrl,
 		links: {}
 	});
 };
@@ -295,26 +307,37 @@ source.isPlaylistUrl = function(url) {
 	try {
 		if (!url) return false;
 
+		// Check for URL hint
+		if (url.includes('isPeertubePlaylist=1')) {
+			return true;
+		}
+
 		// Check if URL belongs to the base instance and matches playlist pattern
 		const baseUrl = plugin.config.constants.baseUrl;
 		const isInstancePlaylist = url.startsWith(`${baseUrl}/videos/watch/playlist/`) || 
 								  url.startsWith(`${baseUrl}/w/p/`) ||
 								  url.startsWith(`${baseUrl}/video-playlists/`) ||
-								  url.startsWith(`${baseUrl}/video-channels/`) && url.includes('/video-playlists/');
+								  (url.startsWith(`${baseUrl}/video-channels/`) && url.includes('/video-playlists/')) ||
+								  (url.startsWith(`${baseUrl}/c/`) && url.includes('/video-playlists/'));
 		if (isInstancePlaylist) return true;
 
 		const urlTest = new URL(url);
-		const { host, pathname } = urlTest;
+		const { host, pathname, searchParams } = urlTest;
+
+		// Check for URL hint in searchParams
+		if (searchParams.has('isPeertubePlaylist')) {
+			return true;
+		}
 
 		// Check if the URL is from a known PeerTube instance
 		const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
 
 		// Match PeerTube playlist paths:
-		// - /videos/watch/playlist/{uuid}
-		// - /w/p/{uuid}
-		// - /video-playlists/{uuid} (direct playlist URLs)
-		// - /video-channels/{channelName}/video-playlists/{playlistId}
-		// - /c/{channelName}/video-playlists/{playlistId}
+		// - /videos/watch/playlist/{uuid} - Standard playlist URL
+		// - /w/p/{uuid} - Short form playlist URL
+		// - /video-playlists/{uuid} - Direct playlist URL format
+		// - /video-channels/{channelName}/video-playlists/{playlistId} - Channel playlist URL
+		// - /c/{channelName}/video-playlists/{playlistId} - Short form channel playlist URL
 		const isPeerTubePlaylistPath = /^\/(videos\/watch\/playlist|w\/p)\/[a-zA-Z0-9-_]+$/.test(pathname) ||
 										/^\/video-playlists\/[a-zA-Z0-9-_]+$/.test(pathname) ||
 										/^\/(video-channels|c)\/[a-zA-Z0-9-_.]+\/video-playlists\/[a-zA-Z0-9-_]+$/.test(pathname);
@@ -348,18 +371,22 @@ source.getPlaylist = function(url) {
 		`${sourceBaseUrl}${playlist.thumbnailPath}` : 
 		URLS.PEERTUBE_LOGO;
 	
+	// Add URL hints using utility functions
+	const channelUrl = addChannelUrlHint(playlist.ownerAccount?.url);
+	const playlistUrl = addPlaylistUrlHint(`${sourceBaseUrl}/w/p/${playlist.uuid}`);
+	
 	return new PlatformPlaylistDetails({
 		id: new PlatformID(PLATFORM, playlist.uuid, config.id),
 		name: playlist.displayName || playlist.name,
 		author: new PlatformAuthorLink(
 			new PlatformID(PLATFORM, playlist.ownerAccount?.name, config.id),
 			playlist.ownerAccount?.displayName || playlist.ownerAccount?.name || "",
-			playlist.ownerAccount?.url,
+			channelUrl,
 			getAvatarUrl(playlist.ownerAccount, sourceBaseUrl)
 		),
 		thumbnail: thumbnailUrl,
 		videoCount: playlist.videosLength || 0,
-		url: `${sourceBaseUrl}/w/p/${playlist.uuid}`,
+		url: playlistUrl,
 		contents: getVideoPager(
 			`/api/v1/video-playlists/${playlistId}/videos`, 
 			{}, 
@@ -378,15 +405,29 @@ source.isContentDetailsUrl = function (url) {
 	try {
 		if (!url) return false;
 
+		// Check for URL hint
+		if (url.includes('isPeertubeContent=1')) {
+			return true;
+		}
+
 		// Check if URL belongs to the base instance and matches content patterns
 		const baseUrl = plugin.config.constants.baseUrl;
 		const isInstanceContentDetails = url.startsWith(`${baseUrl}/videos/watch/`) || url.startsWith(`${baseUrl}/w/`);
 		if (isInstanceContentDetails) return true;
 
 		const urlTest = new URL(url);
-		const { host, pathname } = urlTest;
+		const { host, pathname, searchParams } = urlTest;
+
+		// Check for URL hint in searchParams
+		if (searchParams.has('isPeertubeContent')) {
+			return true;
+		}
 
 		// Check if the path follows a known PeerTube video format
+		// Supports:
+		// - /videos/watch/{videoId}
+		// - /videos/embed/{videoId}
+		// - /w/{videoId}
 		const isPeerTubeVideoPath = /^\/(videos\/(watch|embed)|w)\/[a-zA-Z0-9-_]+$/.test(pathname);
 
 		// Check if the URL is from a known PeerTube instance
@@ -459,7 +500,9 @@ source.getContentDetails = function (url) {
 	}
 
 	//Some older instance versions such as 3.0.0, may not contain the url property
-	const contentUrl = obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`;
+	// Add URL hints using utility functions
+	const contentUrl = addContentUrlHint(obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`);
+	const channelUrl = addChannelUrlHint(obj.channel.url);
 	
 	// Process subtitles data
 	const subtitles = processSubtitlesData(captionsData);
@@ -474,7 +517,7 @@ source.getContentDetails = function (url) {
 		author: new PlatformAuthorLink(
 			new PlatformID(PLATFORM, obj.channel.name, config.id),
 			obj.channel.displayName,
-			obj.channel.url,
+			channelUrl,
 			getAvatarUrl(obj, sourceBaseUrl)
 		),
 		datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
@@ -790,9 +833,11 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 		].filter(Boolean).map(getBaseUrl).find(Boolean);
 
 		//Some older instance versions such as 3.0.0, may not contain the url property
-		const contentUrl = v.url || `${baseUrl}/videos/watch/${v.uuid}`;
-
+		// Add URL hints using utility functions
+		const contentUrl = addContentUrlHint(v.url || `${baseUrl}/videos/watch/${v.uuid}`);
 		const instanceBaseUrl = isSearch ? baseUrl : sourceHost;
+		const channelUrl = addChannelUrlHint(v.channel.url);
+		
 		return new PlatformVideo({
 			id: new PlatformID(PLATFORM, v.uuid, config.id),
 			name: v.name ?? "",
@@ -800,7 +845,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 			author: new PlatformAuthorLink(
 				new PlatformID(PLATFORM, v.channel.name, config.id),
 				v.channel.displayName,
-				v.channel.url,
+				channelUrl,
 				getAvatarUrl(v, instanceBaseUrl)
 			),
 			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
@@ -885,18 +930,23 @@ function getPlaylistPager(path, params, page, sourceHost = plugin.config.constan
 		const thumbnailUrl = playlist.thumbnailPath ? 
 			`${playlistBaseUrl}${playlist.thumbnailPath}` : 
 			URLS.PEERTUBE_LOGO;
+			
+		// Add URL hints using utility functions
+		const channelUrl = addChannelUrlHint(playlist.ownerAccount?.url);
+		const playlistUrl = addPlaylistUrlHint(`${playlistBaseUrl}/w/p/${playlist.uuid}`);
+		
 		return new PlatformPlaylist({
 			id: new PlatformID(PLATFORM, playlist.uuid, config.id),
 			name: playlist.displayName || playlist.name,
 			author: new PlatformAuthorLink(
 				new PlatformID(PLATFORM, playlist.ownerAccount?.name, config.id),
 				playlist.ownerAccount?.displayName || playlist.ownerAccount?.name || "",
-				playlist.ownerAccount?.url,
+				channelUrl,
 				getAvatarUrl(playlist.ownerAccount, playlistBaseUrl)
 			),
 			thumbnail: thumbnailUrl,
 			videoCount: playlist.videosLength || 0,
-			url: `${playlistBaseUrl}/w/p/${playlist.uuid}`
+			url: playlistUrl
 		});
 	});
 	
@@ -1025,6 +1075,61 @@ function getBaseUrl(url) {
         // Otherwise, create a new ScriptException for URL parsing errors
         throw new ScriptException(`Invalid URL format: ${url}`);
     }
+}
+
+/**
+ * Adds a URL hint parameter to a URL if it doesn't already have one
+ * @param {string} url - The URL to add the hint to
+ * @param {string} hintParam - The hint parameter name (without the value)
+ * @param {string} hintValue - The value for the hint parameter
+ * @returns {string} - The URL with the hint parameter added
+ */
+function addUrlHint(url, hintParam, hintValue = '1') {
+    if (!url) {
+        return url;
+    }
+    
+    // Check if hint already exists
+    if (url.includes(`${hintParam}=${hintValue}`)) {
+        return url;
+    }
+    
+    try {
+        const urlObj = new URL(url);
+        urlObj.searchParams.append(hintParam, hintValue);
+        return urlObj.toString();
+    } catch (error) {
+        // If URL parsing fails, return the original URL
+        log(`Error adding URL hint to ${url}:`, error);
+        return url;
+    }
+}
+
+/**
+ * Adds content URL hint to a PeerTube video URL
+ * @param {string} url - The video URL
+ * @returns {string} - The URL with content hint parameter
+ */
+function addContentUrlHint(url) {
+    return addUrlHint(url, 'isPeertubeContent');
+}
+
+/**
+ * Adds channel URL hint to a PeerTube channel URL
+ * @param {string} url - The channel URL
+ * @returns {string} - The URL with channel hint parameter
+ */
+function addChannelUrlHint(url) {
+    return addUrlHint(url, 'isPeertubeChannel');
+}
+
+/**
+ * Adds playlist URL hint to a PeerTube playlist URL
+ * @param {string} url - The playlist URL
+ * @returns {string} - The URL with playlist hint parameter
+ */
+function addPlaylistUrlHint(url) {
+    return addUrlHint(url, 'isPeertubePlaylist');
 }
 
 function extractChannelId(url) {
