@@ -444,30 +444,39 @@ source.isContentDetailsUrl = function (url) {
 
 /**
  * Processes captions data from API response into GrayJay subtitle format
- * @param {Object} captionsResponse - HTTP response containing captions data
+ * @param {Object} subtitlesResponse - HTTP response containing captions data
  * @returns {Array} - Array of subtitle objects or empty array if none available
  */
-function processSubtitlesData(captionsResponse) {
-	if (!captionsResponse.isOk) {
-		log("Failed to get video subtitles", captionsResponse);
+function processSubtitlesData(subtitlesResponse) {
+	if (!subtitlesResponse.isOk) {
+		log("Failed to get video subtitles", subtitlesResponse);
 		return [];
 	}
-	
+
 	try {
-		const captionsData = JSON.parse(captionsResponse.body);
+
+		const baseUrl = getBaseUrl(subtitlesResponse.url);
+
+		const captionsData = JSON.parse(subtitlesResponse.body);
 		if (!captionsData || !captionsData.data || captionsData.total === 0) {
 			return [];
 		}
-		
+
 		// Convert PeerTube captions to GrayJay subtitle format
-		return captionsData.data.map(caption => {
-			return {
-				name: `${caption?.language?.label ?? caption?.language?.id} ${caption.automaticallyGenerated ? "(auto-generated)" : ""}`,
-				url: caption.fileUrl,
-				format: "text/vtt",
-				language: caption.language.id
-			};
-		});
+		return captionsData.data
+			.map(caption => {
+
+				const subtitleUrl = caption?.fileUrl
+					?? (caption.captionPath ? `${baseUrl}${caption.captionPath}` : ""); //6.1.0
+
+				return {
+					name: `${caption?.language?.label ?? caption?.language?.id} ${caption.automaticallyGenerated ? "(auto-generated)" : ""}`,
+					url: subtitleUrl,
+					format: "text/vtt",
+					language: caption.language.id
+				};
+			})
+			.filter(caption => caption.url);
 	} catch (e) {
 		log("Error parsing captions data", e);
 		return [];
