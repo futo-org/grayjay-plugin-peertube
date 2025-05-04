@@ -527,7 +527,11 @@ source.getContentDetails = function (url) {
 		isLive: obj.isLive,
 		description: obj.description,
 		video: getMediaDescriptor(obj),
-		subtitles: subtitles
+		subtitles: subtitles,
+		rating: new RatingLikesDislikes(
+			obj?.likes ?? 0,
+			obj?.dislikes ?? 0
+		)
 	});
 
 	if (IS_TESTING) {
