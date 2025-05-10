@@ -8,6 +8,19 @@ let state = {
 	isSearchEngineSepiaSearch: false
 }
 
+const supportedResolutions = {
+	'1080p': { width: 1920, height: 1080 },
+	'720p': { width: 1280, height: 720 },
+	'480p': { width: 854, height: 480 },
+	'360p': { width: 640, height: 360 },
+	'240p': { width: 426, height: 240 },
+	'144p': { width: 256, height: 144 }
+};
+
+const URLS = {
+	PEERTUBE_LOGO: "https://plugins.grayjay.app/PeerTube/peertube.png"
+}
+
 // instances are populated during deploy appended to the end of this javascript file
 // this update process is done at update-instances.sh
 let INDEX_INSTANCES = {
@@ -15,6 +28,8 @@ let INDEX_INSTANCES = {
 };
 
 let SEARCH_ENGINE_OPTIONS = [];
+
+Type.Feed.Playlists = "PLAYLISTS";
 
 source.enable = function (conf, settings, saveStateStr) {
 	config = conf ?? {};
@@ -136,12 +151,34 @@ source.searchChannels = function (query) {
 	}, 0, sourceHost, isSearch);
 };
 
+source.searchPlaylists = function (query) {
+	// Determine the search host based on settings
+	let sourceHost = state.isSearchEngineSepiaSearch 
+		? 'https://sepiasearch.org' 
+		: plugin.config.constants.baseUrl;
+	
+	const params = {
+		search: query
+	};
+	
+	// For Sepia Search, add specific parameters
+	if (state.isSearchEngineSepiaSearch) {
+		params.resultType = 'video-playlists';
+		params.nsfw = false;
+		params.sort = '-createdAt';
+	}
+	
+	return getPlaylistPager('/api/v1/search/video-playlists', params, 0, sourceHost, true);
+};
+
 source.isChannelUrl = function (url) {
 	try {
-
-		log(`isChannel: ${url}`)
-
 		if (!url) return false;
+
+		// Check for URL hint
+		if (url.includes('isPeertubeChannel=1')) {
+			return true;
+		}
 
 		// Check if the URL belongs to the base instance
 		const baseUrl = plugin.config.constants.baseUrl;
@@ -149,23 +186,28 @@ source.isChannelUrl = function (url) {
 		if (isInstanceChannel) return true;
 
 		const urlTest = new URL(url);
-		const { host, pathname } = urlTest;
+		const { host, pathname, searchParams } = urlTest;
+
+		// Check for URL hint in searchParams
+		if (searchParams.has('isPeertubeChannel')) {
+			return true;
+		}
 
 		// Check if the URL is from a known PeerTube instance
 		const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
 
 		// Match PeerTube channel paths:
-		// - /c/{channel}
-		// - /c/{channel}/video
-		// - /c/{channel}/videos
-		// - /video-channels/{channel}
-		// - /video-channels/{channel}/videos
+		// - /c/{channel} - Short form channel URL
+		// - /c/{channel}/videos - Channel videos listing
+		// - /c/{channel}/video - Alternate channel videos listing
+		// - /video-channels/{channel} - Long form channel URL
+		// - /video-channels/{channel}/videos - Channel videos listing
 		// - Allow optional trailing slash
 		const isPeerTubeChannelPath = /^\/(c|video-channels)\/[a-zA-Z0-9-_.]+(\/(video|videos)?)?\/?$/.test(pathname);
 
 		return isKnownInstanceUrl && isPeerTubeChannelPath;
 	} catch (error) {
-		console.error('Error checking PeerTube channel URL:', error);
+		log('Error checking PeerTube channel URL:', error);
 		return false;
 	}
 };
@@ -175,10 +217,14 @@ source.isChannelUrl = function (url) {
 source.getChannel = function (url) {
 
 	const handle = extractChannelId(url);
-	const sourceBaseUrl = getBaseUrl(url);
 
+	if (!handle) {
+		throw new ScriptException(`Failed to extract channel ID from URL: ${url}`);
+	}
+	
+	const sourceBaseUrl = getBaseUrl(url);
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-channels/${handle}`;
-	log("GET " + urlWithParams);
+
 	const res = http.GET(urlWithParams, {});
 
 	if (res.code != 200) {
@@ -188,20 +234,23 @@ source.getChannel = function (url) {
 
 	const obj = JSON.parse(res.body);
 
+	// Add URL hint using utility function
+	const channelUrl = addChannelUrlHint(obj.url || `${sourceBaseUrl}/video-channels/${handle}`);
+	
 	return new PlatformChannel({
 		id: new PlatformID(PLATFORM, obj.name, config.id),
-		name: obj.displayName,
+		name: obj.displayName || obj.name || handle,
 		thumbnail: getAvatarUrl(obj, sourceBaseUrl),
 		banner: null,
-		subscribers: obj.followersCount,
+		subscribers: obj.followersCount || 0,
 		description: obj.description ?? "",
-		url: obj.url,
+		url: channelUrl,
 		links: {}
 	});
 };
 source.getChannelCapabilities = () => {
 	return {
-		types: [Type.Feed.Mixed, Type.Feed.Streams, Type.Feed.Videos],
+		types: [Type.Feed.Mixed, Type.Feed.Streams, Type.Feed.Videos, Type.Feed.Playlists],
 		sorts: [Type.Order.Chronological, "publishedAt"]
 	};
 };
@@ -215,22 +264,151 @@ source.getChannelContents = function (url, type, order, filters) {
 		sort
 	};
 
-	if (type == Type.Feed.Streams) {
-		params.isLive = true;
-	} else if (type == Type.Feed.Videos) {
-		params.isLive = false;
-	}
-
 	const handle = extractChannelId(url);
-
 	const sourceBaseUrl = getBaseUrl(url);
 
-	return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl);
+	// Handle different content type requests
+	if (type === Type.Feed.Playlists) {
+		// For playlists from a channel
+		return source.getChannelPlaylists(url, order, filters);
+	} else {
+		// For video types (Mixed, Streams, Videos)
+		if (type == Type.Feed.Streams) {
+			params.isLive = true;
+		} else if (type == Type.Feed.Videos) {
+			params.isLive = false;
+		}
+
+		return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl);
+	}
+};
+
+source.getChannelPlaylists = function (url, order, filters) {
+	let sort = order;
+	if (sort === Type.Order.Chronological) {
+		sort = "-publishedAt";
+	}
+
+	const params = {
+		sort
+	};
+
+	const handle = extractChannelId(url);
+	if (!handle) {
+		return new PlaylistPager([], false);
+	}
+
+	const sourceBaseUrl = getBaseUrl(url);
+	return getPlaylistPager(`/api/v1/video-channels/${handle}/video-playlists`, params, 0, sourceBaseUrl);
+};
+
+// Adds support for checking if a URL is a playlist URL
+source.isPlaylistUrl = function(url) {
+	try {
+		if (!url) return false;
+
+		// Check for URL hint
+		if (url.includes('isPeertubePlaylist=1')) {
+			return true;
+		}
+
+		// Check if URL belongs to the base instance and matches playlist pattern
+		const baseUrl = plugin.config.constants.baseUrl;
+		const isInstancePlaylist = url.startsWith(`${baseUrl}/videos/watch/playlist/`) || 
+								  url.startsWith(`${baseUrl}/w/p/`) ||
+								  url.startsWith(`${baseUrl}/video-playlists/`) ||
+								  (url.startsWith(`${baseUrl}/video-channels/`) && url.includes('/video-playlists/')) ||
+								  (url.startsWith(`${baseUrl}/c/`) && url.includes('/video-playlists/'));
+		if (isInstancePlaylist) return true;
+
+		const urlTest = new URL(url);
+		const { host, pathname, searchParams } = urlTest;
+
+		// Check for URL hint in searchParams
+		if (searchParams.has('isPeertubePlaylist')) {
+			return true;
+		}
+
+		// Check if the URL is from a known PeerTube instance
+		const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
+
+		// Match PeerTube playlist paths:
+		// - /videos/watch/playlist/{uuid} - Standard playlist URL
+		// - /w/p/{uuid} - Short form playlist URL
+		// - /video-playlists/{uuid} - Direct playlist URL format
+		// - /video-channels/{channelName}/video-playlists/{playlistId} - Channel playlist URL
+		// - /c/{channelName}/video-playlists/{playlistId} - Short form channel playlist URL
+		const isPeerTubePlaylistPath = /^\/(videos\/watch\/playlist|w\/p)\/[a-zA-Z0-9-_]+$/.test(pathname) ||
+										/^\/video-playlists\/[a-zA-Z0-9-_]+$/.test(pathname) ||
+										/^\/(video-channels|c)\/[a-zA-Z0-9-_.]+\/video-playlists\/[a-zA-Z0-9-_]+$/.test(pathname);
+
+		return isKnownInstanceUrl && isPeerTubePlaylistPath;
+	} catch (error) {
+		log('Error checking PeerTube playlist URL:', error);
+		return false;
+	}
+};
+
+// Gets a playlist and its information
+source.getPlaylist = function(url) {
+	const playlistId = extractPlaylistId(url);
+	if (!playlistId) {
+		return null;
+	}
+
+	const sourceBaseUrl = getBaseUrl(url);
+	const urlWithParams = `${sourceBaseUrl}/api/v1/video-playlists/${playlistId}`;
+	
+	const res = http.GET(urlWithParams, {});
+	
+	if (res.code != 200) {
+		log("Failed to get playlist", res);
+		return null;
+	}
+	
+	const playlist = JSON.parse(res.body);
+	const thumbnailUrl = playlist.thumbnailPath ? 
+		`${sourceBaseUrl}${playlist.thumbnailPath}` : 
+		URLS.PEERTUBE_LOGO;
+	
+	// Add URL hints using utility functions
+	const channelUrl = addChannelUrlHint(playlist.ownerAccount?.url);
+	const playlistUrl = addPlaylistUrlHint(`${sourceBaseUrl}/w/p/${playlist.uuid}`);
+	
+	return new PlatformPlaylistDetails({
+		id: new PlatformID(PLATFORM, playlist.uuid, config.id),
+		name: playlist.displayName || playlist.name,
+		author: new PlatformAuthorLink(
+			new PlatformID(PLATFORM, playlist.ownerAccount?.name, config.id),
+			playlist.ownerAccount?.displayName || playlist.ownerAccount?.name || "",
+			channelUrl,
+			getAvatarUrl(playlist.ownerAccount, sourceBaseUrl)
+		),
+		thumbnail: thumbnailUrl,
+		videoCount: playlist.videosLength || 0,
+		url: playlistUrl,
+		contents: getVideoPager(
+			`/api/v1/video-playlists/${playlistId}/videos`, 
+			{}, 
+			0, 
+			sourceBaseUrl,
+			false,
+			(playlistItem) => {
+				
+				return playlistItem.video;
+			}
+		)
+	});
 };
 
 source.isContentDetailsUrl = function (url) {
 	try {
 		if (!url) return false;
+
+		// Check for URL hint
+		if (url.includes('isPeertubeContent=1')) {
+			return true;
+		}
 
 		// Check if URL belongs to the base instance and matches content patterns
 		const baseUrl = plugin.config.constants.baseUrl;
@@ -238,9 +416,18 @@ source.isContentDetailsUrl = function (url) {
 		if (isInstanceContentDetails) return true;
 
 		const urlTest = new URL(url);
-		const { host, pathname } = urlTest;
+		const { host, pathname, searchParams } = urlTest;
+
+		// Check for URL hint in searchParams
+		if (searchParams.has('isPeertubeContent')) {
+			return true;
+		}
 
 		// Check if the path follows a known PeerTube video format
+		// Supports:
+		// - /videos/watch/{videoId}
+		// - /videos/embed/{videoId}
+		// - /w/{videoId}
 		const isPeerTubeVideoPath = /^\/(videos\/(watch|embed)|w)\/[a-zA-Z0-9-_]+$/.test(pathname);
 
 		// Check if the URL is from a known PeerTube instance
@@ -248,128 +435,123 @@ source.isContentDetailsUrl = function (url) {
 
 		return isInstanceContentDetails || (isKnownInstanceUrl && isPeerTubeVideoPath);
 	} catch (error) {
-		console.error('Error checking PeerTube content URL:', error);
+		log('Error checking PeerTube content URL:', error);
 		return false;
 	}
 };
 
 
-const supportedResolutions = {
-	'1080p': { width: 1920, height: 1080 },
-	'720p': { width: 1280, height: 720 },
-	'480p': { width: 854, height: 480 },
-	'360p': { width: 640, height: 360 },
-	'240p': { width: 426, height: 240 },
-	'144p': { width: 256, height: 144 }
-};
 
-source.getContentDetails = function (url) {
-
-
-	// Create video source based on file and resolution
-	function createVideoSource(file, duration) {
-		const supportedResolution = file.resolution.width && file.resolution.height
-			? { width: file.resolution.width, height: file.resolution.height }
-			: supportedResolutions[file.resolution.label];
-
-		return new VideoUrlSource({
-			name: file.resolution.label,
-			url: file.fileUrl ?? file.fileDownloadUrl,
-			width: supportedResolution?.width,
-			height: supportedResolution?.height,
-			duration: duration,
-			container: "video/mp4"
-		});
-	}
-
-	// Process files and create sources
-	function processFiles(files, duration) {
-		const sources = [];
-		for (const file of (files ?? [])) {
-			const source = createVideoSource(file, duration);
-			if (source) {
-				sources.push(source);
-			}
-		}
-		return sources;
+/**
+ * Processes captions data from API response into GrayJay subtitle format
+ * @param {Object} subtitlesResponse - HTTP response containing captions data
+ * @returns {Array} - Array of subtitle objects or empty array if none available
+ */
+function processSubtitlesData(subtitlesResponse) {
+	if (!subtitlesResponse.isOk) {
+		log("Failed to get video subtitles", subtitlesResponse);
+		return [];
 	}
 
 	try {
-		const videoId = extractVideoId(url);
-		if (!videoId) {
-			return null;
+
+		const baseUrl = getBaseUrl(subtitlesResponse.url);
+
+		const captionsData = JSON.parse(subtitlesResponse.body);
+		if (!captionsData || !captionsData.data || captionsData.total === 0) {
+			return [];
 		}
 
-		const sourceBaseUrl = getBaseUrl(url);
-		const urlWithParams = `${sourceBaseUrl}/api/v1/videos/${videoId}`;
-		log("GET " + urlWithParams);
-		const res = http.GET(urlWithParams, {});
-		if (!res.isOk) {
-			log("Failed to get video detail", res);
-			return null;
-		}
+		// Convert PeerTube captions to GrayJay subtitle format
+		return captionsData.data
+			.map(caption => {
 
-		const obj = JSON.parse(res.body);
-		if (!obj) {
-			log("Failed to parse response");
-			return null;
-		}
+				const subtitleUrl = caption?.fileUrl
+					?? (caption.captionPath ? `${baseUrl}${caption.captionPath}` : ""); //6.1.0
 
-		const sources = [];
-
-		// Process streaming playlists
-		for (const playlist of (obj?.streamingPlaylists ?? [])) {
-			sources.push(new HLSSource({
-				name: "HLS",
-				url: playlist.playlistUrl,
-				duration: obj.duration ?? 0,
-				priority: true
-			}));
-
-			sources.push(...processFiles(playlist?.files, obj.duration));
-		}
-
-		// Process direct files (older versions)
-		sources.push(...processFiles(obj?.files, obj.duration));
-
-		//Some older instance versions such as 3.0.0, may not contain the url property
-		const contentUrl = obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`;
-
-		const result = new PlatformVideoDetails({
-			id: new PlatformID(PLATFORM, obj.uuid, config.id),
-			name: obj.name,
-			thumbnails: new Thumbnails([new Thumbnail(
-				`${sourceBaseUrl}${obj.thumbnailPath}`,
-				0
-			)]),
-			author: new PlatformAuthorLink(
-				new PlatformID(PLATFORM, obj.channel.name, config.id),
-				obj.channel.displayName,
-				obj.channel.url,
-				getAvatarUrl(obj, sourceBaseUrl)
-			),
-			datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
-			duration: obj.duration,
-			viewCount: obj.views,
-			url: contentUrl,
-			isLive: obj.isLive,
-			description: obj.description,
-			video: new VideoSourceDescriptor(sources)
-		});
-
-		if (IS_TESTING) {
-			source.getContentRecommendations(url, obj);
-		} else {
-			result.getContentRecommendations = function () {
-				return source.getContentRecommendations(url, obj);
-			};
-		}
-
-		return result;
-
-	} catch (err) {
-		throw new ScriptException("Error processing video details", err);
+				return {
+					name: `${caption?.language?.label ?? caption?.language?.id} ${caption.automaticallyGenerated ? "(auto-generated)" : ""}`,
+					url: subtitleUrl,
+					format: "text/vtt",
+					language: caption.language.id
+				};
+			})
+			.filter(caption => caption.url);
+	} catch (e) {
+		log("Error parsing captions data", e);
+		return [];
 	}
+}
+
+source.getContentDetails = function (url) {
+	const videoId = extractVideoId(url);
+	if (!videoId) {
+		return null;
+	}
+
+	const sourceBaseUrl = getBaseUrl(url);
+	
+	// Create a batch request for both video details and captions
+	const [videoDetails, captionsData] = http.batch()
+		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, {})
+		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`, {})
+		.execute();
+	
+	if (!videoDetails.isOk) {
+		log("Failed to get video detail", videoDetails);
+		return null;
+	}
+
+	const obj = JSON.parse(videoDetails.body);
+	if (!obj) {
+		log("Failed to parse response");
+		return null;
+	}
+
+	//Some older instance versions such as 3.0.0, may not contain the url property
+	// Add URL hints using utility functions
+	const contentUrl = addContentUrlHint(obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`);
+	const channelUrl = addChannelUrlHint(obj.channel.url);
+	
+	// Process subtitles data
+	const subtitles = processSubtitlesData(captionsData);
+
+	const result = new PlatformVideoDetails({
+		id: new PlatformID(PLATFORM, obj.uuid, config.id),
+		name: obj.name,
+		thumbnails: new Thumbnails([new Thumbnail(
+			`${sourceBaseUrl}${obj.thumbnailPath}`,
+			0
+		)]),
+		author: new PlatformAuthorLink(
+			new PlatformID(PLATFORM, obj.channel.name, config.id),
+			obj.channel.displayName,
+			channelUrl,
+			getAvatarUrl(obj, sourceBaseUrl)
+		),
+		datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
+		duration: obj.duration,
+		viewCount: obj.views,
+		url: contentUrl,
+		isLive: obj.isLive,
+		description: obj.description,
+		video: getMediaDescriptor(obj),
+		subtitles: subtitles,
+		rating: new RatingLikesDislikes(
+			obj?.likes ?? 0,
+			obj?.dislikes ?? 0
+		)
+	});
+
+	if (IS_TESTING) {
+		source.getContentRecommendations(url, obj);
+	} else {
+		result.getContentRecommendations = function () {
+			return source.getContentRecommendations(url, obj);
+		};
+	}
+
+	return result;
 };
 
 source.getContentRecommendations = function (url, obj) {
@@ -513,12 +695,12 @@ class PeerTubePlaybackTracker extends PlaybackTracker {
 }
 
 class PeerTubeVideoPager extends VideoPager {
-	constructor(results, hasMore, path, params, page, sourceHost, isSearch) {
-		super(results, hasMore, { path, params, page, sourceHost, isSearch });
+	constructor(results, hasMore, path, params, page, sourceHost, isSearch, cbMap) {
+		super(results, hasMore, { path, params, page, sourceHost, isSearch, cbMap });
 	}
 
 	nextPage() {
-		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch);
+		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch, this.context.cbMap);
 	}
 }
 
@@ -539,6 +721,16 @@ class PeerTubeCommentPager extends CommentPager {
 
 	nextPage() {
 		return getCommentPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
+	}
+}
+
+class PeerTubePlaylistPager extends PlaylistPager {
+	constructor(results, hasMore, path, params, page, sourceHost, isSearch) {
+		super(results, hasMore, { path, params, page, sourceHost, isSearch });
+	}
+
+	nextPage() {
+		return getPlaylistPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch);
 	}
 }
 
@@ -581,7 +773,6 @@ function buildQuery(params) {
 }
 
 function getChannelPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
-	log(`getChannelPager page=${page}`, params)
 
 	const count = 20;
 	const start = (page ?? 0) * count;
@@ -589,7 +780,7 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 
 	const url = `${sourceHost}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
-	log("GET " + urlWithParams);
+
 	const res = http.GET(urlWithParams, {});
 
 	if (res.code != 200) {
@@ -614,8 +805,7 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 	}), obj.total > (start + count), path, params, page);
 }
 
-function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
-	log(`getVideoPager page=${page}`, params)
+function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false, cbMap) {
 
 	const count = 20;
 	const start = (page ?? 0) * count;
@@ -625,7 +815,6 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	const urlWithParams = `${url}${buildQuery(params)}`;
 
-	log("GET " + urlWithParams);
 	const res = http.GET(urlWithParams, {});
 
 
@@ -638,7 +827,14 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	const hasMore = obj.total > (start + count);
 
-	const contentResultList = obj.data.map(v => {
+	// check if cbMap is a function
+	if (typeof cbMap === 'function') {
+		obj.data = obj.data.map(cbMap);
+	}
+
+	const contentResultList = obj.data
+	.filter(Boolean)//playlists may contain null values for private videos
+	.map(v => {
 
 		const baseUrl = [
 			v.url,
@@ -650,10 +846,11 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 		].filter(Boolean).map(getBaseUrl).find(Boolean);
 
 		//Some older instance versions such as 3.0.0, may not contain the url property
-		const contentUrl = v.url || `${baseUrl}/videos/watch/${v.uuid}`;
-
+		// Add URL hints using utility functions
+		const contentUrl = addContentUrlHint(v.url || `${baseUrl}/videos/watch/${v.uuid}`);
 		const instanceBaseUrl = isSearch ? baseUrl : sourceHost;
-
+		const channelUrl = addChannelUrlHint(v.channel.url);
+		
 		return new PlatformVideo({
 			id: new PlatformID(PLATFORM, v.uuid, config.id),
 			name: v.name ?? "",
@@ -661,7 +858,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 			author: new PlatformAuthorLink(
 				new PlatformID(PLATFORM, v.channel.name, config.id),
 				v.channel.displayName,
-				v.channel.url,
+				channelUrl,
 				getAvatarUrl(v, instanceBaseUrl)
 			),
 			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
@@ -673,11 +870,10 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	});
 
-	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch);
+	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap);
 }
 
 function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
-	log(`getCommentPager page=${page}`, params)
 
 	const count = 20;
 	const start = (page ?? 0) * count;
@@ -685,7 +881,6 @@ function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.const
 
 	const url = `${sourceBaseUrl}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
-	log("GET " + urlWithParams);
 	const res = http.GET(urlWithParams, {});
 
 	if (res.code != 200) {
@@ -713,6 +908,62 @@ function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.const
 				context: { id: v.id }
 			});
 		}), obj.total > (start + count), path, params, page);
+}
+
+/**
+ * Fetches playlists and creates a PeerTubePlaylistPager
+ * @param {string} path - The API path to fetch playlists from
+ * @param {Object} params - Query parameters
+ * @param {number} page - Page number for pagination
+ * @param {string} sourceHost - The base URL of the PeerTube instance
+ * @param {boolean} isSearch - Whether this is a search request
+ * @returns {PlaylistPager} - Pager for playlists
+ */
+function getPlaylistPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
+	const count = 20;
+	const start = (page ?? 0) * count;
+	params = { ...params, start, count };
+
+	const url = `${sourceHost}${path}`;
+	const urlWithParams = `${url}${buildQuery(params)}`;
+	
+	const res = http.GET(urlWithParams, {});
+	
+	if (res.code != 200) {
+		log("Failed to get playlists", res);
+		return new PlaylistPager([], false);
+	}
+	
+	const obj = JSON.parse(res.body);
+	const hasMore = obj.total > (start + count);
+	
+	const playlistResults = obj.data.map(playlist => {
+		// Determine the base URL for this playlist
+		const playlistBaseUrl = isSearch ? getBaseUrl(playlist.url) : sourceHost;
+		const thumbnailUrl = playlist.thumbnailPath ? 
+			`${playlistBaseUrl}${playlist.thumbnailPath}` : 
+			URLS.PEERTUBE_LOGO;
+			
+		// Add URL hints using utility functions
+		const channelUrl = addChannelUrlHint(playlist.ownerAccount?.url);
+		const playlistUrl = addPlaylistUrlHint(`${playlistBaseUrl}/w/p/${playlist.uuid}`);
+		
+		return new PlatformPlaylist({
+			id: new PlatformID(PLATFORM, playlist.uuid, config.id),
+			name: playlist.displayName || playlist.name,
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, playlist.ownerAccount?.name, config.id),
+				playlist.ownerAccount?.displayName || playlist.ownerAccount?.name || "",
+				channelUrl,
+				getAvatarUrl(playlist.ownerAccount, playlistBaseUrl)
+			),
+			thumbnail: thumbnailUrl,
+			videoCount: playlist.videosLength || 0,
+			url: playlistUrl
+		});
+	});
+	
+	return new PeerTubePlaylistPager(playlistResults, hasMore, path, params, page, sourceHost, isSearch);
 }
 
 function extractVersionParts(version) {
@@ -780,7 +1031,7 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 		return `${baseUrl}${relativePath}`;
 	}
 
-	return "";
+	return URLS.PEERTUBE_LOGO;
 }
 
 /**
@@ -802,8 +1053,6 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
  * getBaseUrl("invalid-url");
  */
 function getBaseUrl(url) {
-
-
     if (typeof url !== 'string') {
         throw new ScriptException('URL must be a string');
     }
@@ -841,6 +1090,61 @@ function getBaseUrl(url) {
     }
 }
 
+/**
+ * Adds a URL hint parameter to a URL if it doesn't already have one
+ * @param {string} url - The URL to add the hint to
+ * @param {string} hintParam - The hint parameter name (without the value)
+ * @param {string} hintValue - The value for the hint parameter
+ * @returns {string} - The URL with the hint parameter added
+ */
+function addUrlHint(url, hintParam, hintValue = '1') {
+    if (!url) {
+        return url;
+    }
+    
+    // Check if hint already exists
+    if (url.includes(`${hintParam}=${hintValue}`)) {
+        return url;
+    }
+    
+    try {
+        const urlObj = new URL(url);
+        urlObj.searchParams.append(hintParam, hintValue);
+        return urlObj.toString();
+    } catch (error) {
+        // If URL parsing fails, return the original URL
+        log(`Error adding URL hint to ${url}:`, error);
+        return url;
+    }
+}
+
+/**
+ * Adds content URL hint to a PeerTube video URL
+ * @param {string} url - The video URL
+ * @returns {string} - The URL with content hint parameter
+ */
+function addContentUrlHint(url) {
+    return addUrlHint(url, 'isPeertubeContent');
+}
+
+/**
+ * Adds channel URL hint to a PeerTube channel URL
+ * @param {string} url - The channel URL
+ * @returns {string} - The URL with channel hint parameter
+ */
+function addChannelUrlHint(url) {
+    return addUrlHint(url, 'isPeertubeChannel');
+}
+
+/**
+ * Adds playlist URL hint to a PeerTube playlist URL
+ * @param {string} url - The playlist URL
+ * @returns {string} - The URL with playlist hint parameter
+ */
+function addPlaylistUrlHint(url) {
+    return addUrlHint(url, 'isPeertubePlaylist');
+}
+
 function extractChannelId(url) {
 	try {
 		if (!url) return null;
@@ -853,7 +1157,7 @@ function extractChannelId(url) {
 
 		return match ? match[2] : null; // match[2] contains the extracted channel ID
 	} catch (error) {
-		console.error('Error extracting PeerTube channel ID:', error);
+		log('Error extracting PeerTube channel ID:', error);
 		return null;
 	}
 }
@@ -871,7 +1175,48 @@ function extractVideoId(url) {
 
 		return match ? match[3] : null; // match[3] contains the extracted video ID
 	} catch (error) {
-		console.error('Error extracting PeerTube video ID:', error);
+		log('Error extracting PeerTube video ID:', error);
+		return null;
+	}
+}
+
+/**
+ * Extracts playlist ID from PeerTube playlist URLs
+ * @param {string} url - PeerTube playlist URL
+ * @returns {string|null} - Playlist ID or null if not a valid playlist URL
+ */
+function extractPlaylistId(url) {
+	try {
+		if (!url) return null;
+
+		const urlTest = new URL(url);
+		const { pathname } = urlTest;
+
+		// Try to match standard playlist URL patterns
+		// - /videos/watch/playlist/{uuid}
+		// - /w/p/{uuid}
+		// Allow a wider range of characters in the ID to support more instances
+		let match = pathname.match(/^\/(videos\/watch\/playlist\/|w\/p\/)([a-zA-Z0-9-_]+)(?:\/.*)?$/);
+		// If no match, try another pattern that allows more characters in the ID
+		if (!match) {
+			match = pathname.match(/^\/w\/p\/([a-zA-Z0-9]+)(?:\/.*)?$/);
+		}
+		if (match) return match[match.length-1];
+		
+		// Try to match direct playlist URL pattern
+		// - /video-playlists/{uuid}
+		match = pathname.match(/^\/video-playlists\/([a-zA-Z0-9-_]+)(?:\/.*)?$/);
+		if (match) return match[1];
+		
+		// Try to match channel playlist URL patterns
+		// - /video-channels/{channelName}/video-playlists/{playlistId}
+		// - /c/{channelName}/video-playlists/{playlistId}
+		match = pathname.match(/^\/(video-channels|c)\/[a-zA-Z0-9-_.]+\/video-playlists\/([a-zA-Z0-9-_]+)(?:\/.*)?$/);
+		if (match) return match[2];
+
+		return null;
+	} catch (error) {
+		log('Error extracting PeerTube playlist ID:', error);
 		return null;
 	}
 }
@@ -881,6 +1226,102 @@ function loadOptionsForSetting(settingKey, transformCallback) {
 	transformCallback ??= (o) => o;
 	const setting = config?.settings?.find((s) => s.variable == settingKey);
 	return setting?.options?.map(transformCallback) ?? [];
+}
+
+
+function createAudioSource(file, duration) {
+	return new AudioUrlSource({
+		name: file.resolution.label,
+		url: file.fileUrl ?? file.fileDownloadUrl,
+		duration: duration,
+		container: "audio/mp3",
+		codec: "aac"
+	});
+}
+
+// Create video source based on file and resolution
+function createVideoSource(file, duration) {
+	const supportedResolution = file.resolution.width && file.resolution.height
+		? { width: file.resolution.width, height: file.resolution.height }
+		: supportedResolutions[file.resolution.label];
+		
+	return new VideoUrlSource({
+		name: file.resolution.label,
+		url: file.fileUrl ?? file.fileDownloadUrl,
+		width: supportedResolution?.width,
+		height: supportedResolution?.height,
+		duration: duration,
+		container: "video/mp4"
+	});
+}
+
+function getMediaDescriptor(obj) {
+
+	let inputFileSources = [];
+
+	const hlsOutputSources = [];
+
+	const muxedVideoOutputSources = [];
+	const unMuxedVideoOnlyOutputSources = [];
+	const unMuxedAudioOnlyOutputSources = [];
+
+	for (const playlist of (obj?.streamingPlaylists ?? [])) {
+
+		hlsOutputSources.push(new HLSSource({
+			name: "HLS",
+			url: playlist.playlistUrl,
+			duration: obj.duration ?? 0,
+			priority: true
+		}));
+
+		// exclude transcoded files for now due to some incompatibility issues (no length metadata (invalid duration on android devices) and performance issues loading the files on desktop
+		// those are the same videos used for HLS
+		// (playlist?.files ?? []).forEach((file) => {
+		// 	inputFileSources.push(file);
+		// });
+	}
+
+	(obj?.files ?? []).forEach((file) => {
+		inputFileSources.push(file);
+	});
+
+	for (const file of inputFileSources) {
+		const isAudioOnly = (file.hasAudio == undefined && file.hasVideo == undefined && file.resolution.id === 0) || (file.hasAudio && !file.hasVideo);
+
+		if (isAudioOnly) {
+			unMuxedAudioOnlyOutputSources.push(createAudioSource(file, obj.duration));
+		}
+
+		const isMuxedVideo = (file.hasAudio == undefined && file.hasVideo == undefined && file.resolution.id !== 0) || (file.hasAudio && file.hasVideo);
+		if (isMuxedVideo) {
+			muxedVideoOutputSources.push(createVideoSource(file, obj.duration));
+		}
+
+		const isUnMuxedVideoOnly = (!file.hasAudio && file.hasVideo);
+		if (isUnMuxedVideoOnly) {
+			unMuxedVideoOnlyOutputSources.push(createVideoSource(file, obj.duration));
+		}
+	}
+
+	const isAudioMode = !unMuxedVideoOnlyOutputSources.length
+		&& !muxedVideoOutputSources.length
+		&& !hlsOutputSources.length;
+
+	if (isAudioMode) {
+		return new UnMuxVideoSourceDescriptor([], unMuxedAudioOnlyOutputSources);
+	} else {
+		if (hlsOutputSources.length && !unMuxedVideoOnlyOutputSources.length) {
+			return new VideoSourceDescriptor(hlsOutputSources);
+		}
+		else if (muxedVideoOutputSources.length) {
+			return new VideoSourceDescriptor(muxedVideoOutputSources);
+		}
+		else if (unMuxedVideoOnlyOutputSources.length && unMuxedAudioOnlyOutputSources.length) {
+			return new UnMuxVideoSourceDescriptor(unMuxedVideoOnlyOutputSources, unMuxedAudioOnlyOutputSources);
+		}
+		// Fallback to empty video source descriptor if no sources are found
+		return new VideoSourceDescriptor([]);
+	}
 }
 
 // Those instances were requested by users
