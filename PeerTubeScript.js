@@ -103,6 +103,11 @@ source.getSearchCapabilities = () => {
 	};
 };
 source.search = function (query, type, order, filters) {
+
+	if(source.isContentDetailsUrl(query)) {
+		return new ContentPager([source.getContentDetails(query)], false);
+	}
+
 	let sort = order;
 	if (sort === Type.Order.Chronological) {
 		sort = "-publishedAt";
