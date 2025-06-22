@@ -207,8 +207,9 @@ source.isChannelUrl = function (url) {
 		// - /c/{channel}/video - Alternate channel videos listing
 		// - /video-channels/{channel} - Long form channel URL
 		// - /video-channels/{channel}/videos - Channel videos listing
+		// - /api/v1/video-channels/{channel} - API URL (for compatibility)
 		// - Allow optional trailing slash
-		const isPeerTubeChannelPath = /^\/(c|video-channels)\/[a-zA-Z0-9-_.]+(\/(video|videos)?)?\/?$/.test(pathname);
+		const isPeerTubeChannelPath = /^\/(c|video-channels|api\/v1\/video-channels)\/[a-zA-Z0-9-_.]+(\/(video|videos)?)?\/?$/.test(pathname);
 
 		return isKnownInstanceUrl && isPeerTubeChannelPath;
 	} catch (error) {
@@ -343,8 +344,9 @@ source.isPlaylistUrl = function(url) {
 		// - /video-playlists/{uuid} - Direct playlist URL format
 		// - /video-channels/{channelName}/video-playlists/{playlistId} - Channel playlist URL
 		// - /c/{channelName}/video-playlists/{playlistId} - Short form channel playlist URL
+		// - /api/v1/video-playlists/{uuid} - API URL (for compatibility)
 		const isPeerTubePlaylistPath = /^\/(videos\/watch\/playlist|w\/p)\/[a-zA-Z0-9-_]+$/.test(pathname) ||
-										/^\/video-playlists\/[a-zA-Z0-9-_]+$/.test(pathname) ||
+										/^\/(video-playlists|api\/v1\/video-playlists)\/[a-zA-Z0-9-_]+$/.test(pathname) ||
 										/^\/(video-channels|c)\/[a-zA-Z0-9-_.]+\/video-playlists\/[a-zA-Z0-9-_]+$/.test(pathname);
 
 		return isKnownInstanceUrl && isPeerTubePlaylistPath;
@@ -433,7 +435,8 @@ source.isContentDetailsUrl = function (url) {
 		// - /videos/watch/{videoId}
 		// - /videos/embed/{videoId}
 		// - /w/{videoId}
-		const isPeerTubeVideoPath = /^\/(videos\/(watch|embed)|w)\/[a-zA-Z0-9-_]+$/.test(pathname);
+		// - /api/v1/videos/{videoId} - API URL (for compatibility)
+		const isPeerTubeVideoPath = /^\/(videos\/(watch|embed)|w|api\/v1\/videos)\/[a-zA-Z0-9-_]+$/.test(pathname);
 
 		// Check if the URL is from a known PeerTube instance
 		const isKnownInstanceUrl = INDEX_INSTANCES.instances.includes(host);
@@ -593,10 +596,86 @@ source.getContentRecommendations = function (url, obj) {
 source.getComments = function (url) {
 	const videoId = extractVideoId(url);
 	const sourceBaseUrl = getBaseUrl(url);
-	return getCommentPager(`/api/v1/videos/${videoId}/comment-threads`, {}, 0, sourceBaseUrl);
+	return getCommentPager(videoId, {}, 0, sourceBaseUrl);
 }
 source.getSubComments = function (comment) {
-	return getCommentPager(`/api/v1/videos/${comment.context.id}/comment-threads`, {}, 0);
+	if (typeof comment === 'string') {
+		try {
+			comment = JSON.parse(comment);
+		} catch (parseError) {
+			bridge.log("Failed to parse comment string: " + parseError);
+			return new CommentPager([], false);
+		}
+	}
+	
+	// Validate required parameters
+	if (!comment || !comment.contextUrl) {
+		bridge.log("getSubComments: Missing contextUrl in comment");
+		return new CommentPager([], false);
+	}
+	
+	if (!comment.context || !comment.context.id) {
+		bridge.log("getSubComments: Missing comment context or ID");
+		return new CommentPager([], false);
+	}
+	
+	// Extract video ID from the contextUrl
+	const videoId = extractVideoId(comment.contextUrl);
+	if (!videoId) {
+		bridge.log("getSubComments: Could not extract video ID from contextUrl");
+		return new CommentPager([], false);
+	}
+	
+	const sourceBaseUrl = getBaseUrl(comment.contextUrl);
+	
+	// PeerTube uses a specific endpoint to get a comment thread with its replies
+	// GET /api/v1/videos/{id}/comment-threads/{threadId}
+	const commentId = comment.context.id;
+	const apiUrl = `${sourceBaseUrl}/api/v1/videos/${videoId}/comment-threads/${commentId}`;
+	
+	try {
+		const res = http.GET(apiUrl, {});
+		
+		if (res.code != 200) {
+			bridge.log("Failed to get sub-comments, status: " + res.code);
+			return new CommentPager([], false);
+		}
+		
+		const obj = JSON.parse(res.body);
+		
+		// Extract replies from the comment thread response
+		const replies = obj.children || [];
+		
+		const comments = replies.map(v => {
+			// Ensure all string values are properly handled
+			const accountName = (v.comment?.account?.name || 'unknown').toString();
+			const displayName = (v.comment?.account?.displayName || v.comment?.account?.name || 'Unknown User').toString();
+			const messageText = (v.comment?.text || '').toString();
+			const replyCommentId = (v.comment?.id || 'unknown').toString();
+			const platformId = (config.id || 'peertube').toString();
+			
+			return new Comment({
+				contextUrl: comment.contextUrl,
+				author: new PlatformAuthorLink(
+					new PlatformID(PLATFORM, accountName, platformId),
+					displayName,
+					addChannelUrlHint(`${sourceBaseUrl}/c/${accountName}`),
+					getAvatarUrl(v.comment, sourceBaseUrl)
+				),
+				message: messageText,
+				rating: new RatingLikes(v.comment?.likes ?? 0),
+				date: Math.round((new Date(v.comment?.createdAt ?? Date.now())).getTime() / 1000),
+				replyCount: v.comment?.totalReplies ?? 0,
+				context: { id: replyCommentId }
+			});
+		});
+		
+		return new CommentPager(comments, false);
+		
+	} catch (error) {
+		bridge.log("Error getting sub-comments: " + error);
+		return new CommentPager([], false);
+	}
 }
 
 
@@ -720,12 +799,12 @@ class PeerTubeChannelPager extends ChannelPager {
 }
 
 class PeerTubeCommentPager extends CommentPager {
-	constructor(results, hasMore, path, params, page) {
-		super(results, hasMore, { path, params, page });
+	constructor(results, hasMore, videoId, params, page, sourceBaseUrl) {
+		super(results, hasMore, { videoId, params, page, sourceBaseUrl });
 	}
 
 	nextPage() {
-		return getCommentPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
+		return getCommentPager(this.context.videoId, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceBaseUrl);
 	}
 }
 
@@ -878,14 +957,20 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap);
 }
 
-function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
+function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
 
 	const count = 20;
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count }
 
-	const url = `${sourceBaseUrl}${path}`;
-	const urlWithParams = `${url}${buildQuery(params)}`;
+	// Build API URL internally
+	const apiPath = `/api/v1/videos/${videoId}/comment-threads`;
+	const apiUrl = `${sourceBaseUrl}${apiPath}`;
+	const urlWithParams = `${apiUrl}${buildQuery(params)}`;
+	
+	// Build video URL internally
+	const videoUrl = addContentUrlHint(`${sourceBaseUrl}/videos/watch/${videoId}`);
+	
 	const res = http.GET(urlWithParams, {});
 
 	if (res.code != 200) {
@@ -898,21 +983,28 @@ function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.const
 	return new PeerTubeCommentPager(obj.data
 		.filter(v => !v.isDeleted || (v.isDeleted && v.totalReplies > 0)) // filter out deleted comments without replies. TODO: handle soft deleted comments with replies
 		.map(v => {
+			// Ensure all string values are properly handled
+			const accountName = (v.account?.name || 'unknown').toString();
+			const displayName = (v.account?.displayName || v.account?.name || 'Unknown User').toString();
+			const messageText = (v.text || '').toString();
+			const commentId = (v.id || 'unknown').toString();
+			const platformId = (config.id || 'peertube').toString();
+			
 			return new Comment({
-				contextUrl: url,
+				contextUrl: videoUrl || '',
 				author: new PlatformAuthorLink(
-					new PlatformID(PLATFORM, v.account?.name ?? 'unknown', config.id),
-					v.account?.displayName ?? v.account?.name ?? 'Unknown User',
-					`${sourceBaseUrl}/api/v1/video-channels/${v.account?.name ?? 'unknown'}`,
+					new PlatformID(PLATFORM, accountName, platformId),
+					displayName,
+					addChannelUrlHint(`${sourceBaseUrl}/c/${accountName}`),
 					getAvatarUrl(v, sourceBaseUrl)
 				),
-				message: v.text ?? '',
+				message: messageText,
 				rating: new RatingLikes(v.likes ?? 0),
 				date: Math.round((new Date(v.createdAt ?? Date.now())).getTime() / 1000),
 				replyCount: v.totalReplies ?? 0,
-				context: { id: v.id ?? 'unknown' }
+				context: { id: commentId }
 			});
-		}), obj.total > (start + count), path, params, page);
+		}), obj.total > (start + count), videoId, params, page, sourceBaseUrl);
 }
 
 /**
@@ -1157,8 +1249,8 @@ function extractChannelId(url) {
 		const urlTest = new URL(url);
 		const { pathname } = urlTest;
 
-		// Regex to match and extract the channel ID from both /c/ and /video-channels/ URLs
-		const match = pathname.match(/^\/(c|video-channels)\/([a-zA-Z0-9-_.]+)(?:\/(video|videos)?)?\/?$/);
+		// Regex to match and extract the channel ID from /c/, /video-channels/, and /api/v1/video-channels/ URLs
+		const match = pathname.match(/^\/(c|video-channels|api\/v1\/video-channels)\/([a-zA-Z0-9-_.]+)(?:\/(video|videos)?)?\/?$/);
 
 		return match ? match[2] : null; // match[2] contains the extracted channel ID
 	} catch (error) {
@@ -1175,8 +1267,8 @@ function extractVideoId(url) {
 		const urlTest = new URL(url);
 		const { pathname } = urlTest;
 
-		// Regex to match and extract the video ID from various video URL patterns
-		const match = pathname.match(/^\/(videos\/(watch|embed)\/|w\/)([a-zA-Z0-9-_]+)(?:\/.*)?$/);
+		// Regex to match and extract the video ID from various video URL patterns including API URLs
+		const match = pathname.match(/^\/(videos\/(watch|embed)\/|w\/|api\/v1\/videos\/)([a-zA-Z0-9-_]+)(?:\/.*)?$/);
 
 		return match ? match[3] : null; // match[3] contains the extracted video ID
 	} catch (error) {
@@ -1210,8 +1302,9 @@ function extractPlaylistId(url) {
 		
 		// Try to match direct playlist URL pattern
 		// - /video-playlists/{uuid}
-		match = pathname.match(/^\/video-playlists\/([a-zA-Z0-9-_]+)(?:\/.*)?$/);
-		if (match) return match[1];
+		// - /api/v1/video-playlists/{uuid}
+		match = pathname.match(/^\/(video-playlists|api\/v1\/video-playlists)\/([a-zA-Z0-9-_]+)(?:\/.*)?$/);
+		if (match) return match[2];
 		
 		// Try to match channel playlist URL patterns
 		// - /video-channels/{channelName}/video-playlists/{playlistId}
