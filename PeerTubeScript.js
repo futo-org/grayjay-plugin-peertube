@@ -901,16 +901,16 @@ function getCommentPager(path, params, page, sourceBaseUrl = plugin.config.const
 			return new Comment({
 				contextUrl: url,
 				author: new PlatformAuthorLink(
-					new PlatformID(PLATFORM, v.account.name, config.id),
-					v.account.displayName,
-					`${sourceBaseUrl}/api/v1/video-channels/${v.account.name}`,
-					getAvatarUrl(v)
+					new PlatformID(PLATFORM, v.account?.name ?? 'unknown', config.id),
+					v.account?.displayName ?? v.account?.name ?? 'Unknown User',
+					`${sourceBaseUrl}/api/v1/video-channels/${v.account?.name ?? 'unknown'}`,
+					getAvatarUrl(v, sourceBaseUrl)
 				),
-				message: v.text,
-				rating: new RatingLikes(0),
-				date: Math.round((new Date(v.createdAt)).getTime() / 1000),
-				replyCount: v.totalReplies,
-				context: { id: v.id }
+				message: v.text ?? '',
+				rating: new RatingLikes(v.likes ?? 0),
+				date: Math.round((new Date(v.createdAt ?? Date.now())).getTime() / 1000),
+				replyCount: v.totalReplies ?? 0,
+				context: { id: v.id ?? 'unknown' }
 			});
 		}), obj.total > (start + count), path, params, page);
 }
