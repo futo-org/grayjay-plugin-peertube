@@ -8,6 +8,7 @@ deploy-master:
     - sh deploy.sh
   only:
     - master
+  when: manual
 
 deploy-dev:
   stage: deploy
@@ -16,3 +17,4 @@ deploy-dev:
     - sh deploy.sh
   only:
     - dev
+  when: manual

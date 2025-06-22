@@ -53,7 +53,8 @@
 			"Add subtitles support (when available);",
 			"Improve handling media sources with audio only, and videos with split audio and video;",
 			"Improved URL recognition with hints for all content types;",
-			"Add likes and dislikes display for videos;"
+			"Map likes and dislikes display for videos;",
+			"Sync known instances with https://instances.joinpeertube.org;"
 		]
 	},
 	"constants": {
