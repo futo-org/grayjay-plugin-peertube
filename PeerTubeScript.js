@@ -241,7 +241,8 @@ source.getChannel = function (url) {
 	const obj = JSON.parse(res.body);
 
 	// Add URL hint using utility function
-	const channelUrl = addChannelUrlHint(obj.url || `${sourceBaseUrl}/video-channels/${handle}`);
+	const channelUrl = obj.url || `${sourceBaseUrl}/video-channels/${handle}`;
+	const channelUrlWithHint = addChannelUrlHint(channelUrl);
 	
 	return new PlatformChannel({
 		id: new PlatformID(PLATFORM, obj.name, config.id),
@@ -250,8 +251,12 @@ source.getChannel = function (url) {
 		banner: null,
 		subscribers: obj.followersCount || 0,
 		description: obj.description ?? "",
-		url: channelUrl,
-		links: {}
+		url: channelUrlWithHint,
+		links: {},
+		urlAlternatives: [
+			channelUrl,
+			channelUrlWithHint
+		]
 	});
 };
 source.getChannelCapabilities = () => {
