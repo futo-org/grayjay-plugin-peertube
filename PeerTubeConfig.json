@@ -60,6 +60,9 @@
 			"Fix commenter avatar in federated videos;",
 			"Fix comment replies not showing up;",
 			"Fix channel subscription not being recognized as subscribed;"
+		],
+		"24": [
+			"Fix existing subscription not being recognized as subscribed in video details;"
 		]
 	},
 	"constants": {

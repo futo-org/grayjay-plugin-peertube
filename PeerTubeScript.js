@@ -251,7 +251,7 @@ source.getChannel = function (url) {
 		banner: null,
 		subscribers: obj.followersCount || 0,
 		description: obj.description ?? "",
-		url: channelUrl,
+		url: channelUrlWithHint,
 		links: {},
 		urlAlternatives: [
 			channelUrl,
