@@ -5,7 +5,8 @@ let _settings = {};
 
 let state = {
 	serverVersion: '',
-	isSearchEngineSepiaSearch: false
+	isSearchEngineSepiaSearch: false,
+	isHomeContentSepiaSearch: false
 }
 
 const supportedResolutions = {
@@ -28,6 +29,7 @@ let INDEX_INSTANCES = {
 };
 
 let SEARCH_ENGINE_OPTIONS = [];
+let HOME_CONTENT_SOURCE_OPTIONS = [];
 
 Type.Feed.Playlists = "PLAYLISTS";
 
@@ -36,21 +38,17 @@ source.enable = function (conf, settings, saveStateStr) {
 	_settings = settings ?? {};
 
 	SEARCH_ENGINE_OPTIONS = loadOptionsForSetting('searchEngineIndex');
+	HOME_CONTENT_SOURCE_OPTIONS = loadOptionsForSetting('homeContentSourceIndex');
 
 	let didSaveState = false;
 
 	if (IS_TESTING) {
-		plugin.config = {
-			constants: {
-				baseUrl: "https://peertube.futo.org"
-			}
-		}
 
 		_settings.searchEngineIndex = 0; //Current Instance
 		_settings.submitActivity = true;
+		_settings.homeContentSourceIndex = 0; //Current instance
+		_settings.hideNSFWContent = true; //Hide adult content by default
 	}
-
-	state.isSearchEngineSepiaSearch = SEARCH_ENGINE_OPTIONS[_settings.searchEngineIndex] == 'Sepia Search'
 
 	try {
 		if (saveStateStr) {
@@ -60,6 +58,10 @@ source.enable = function (conf, settings, saveStateStr) {
 	} catch (ex) {
 		log('Failed to parse saveState:' + ex);
 	}
+
+	// Always recalculate these flags based on current settings
+	state.isSearchEngineSepiaSearch = SEARCH_ENGINE_OPTIONS[parseInt(_settings.searchEngineIndex)] == 'Sepia Search'
+	state.isHomeContentSepiaSearch = HOME_CONTENT_SOURCE_OPTIONS[parseInt(_settings.homeContentSourceIndex)] == 'Sepia Search'
 
 	if (!didSaveState) {
 		const [currentInstanceConfig] = http.batch()
@@ -93,7 +95,7 @@ source.getHome = function () {
 		'-hot'          // 6: Hot
 	];
 
-	const homeFeedSortIndex = plugin.settings.homeFeedSortIndex || 0;
+	const homeFeedSortIndex = _settings.homeFeedSortIndex || 0;
 	sort = sortOptions[homeFeedSortIndex] || 'best';
 
 	// Check version compatibility for certain sorting options
@@ -107,11 +109,45 @@ source.getHome = function () {
 		sort = '-publishedAt';
 	}
 
-	// Try the sort option, but handle potential errors gracefully
+	// Determine source host and parameters based on home content source setting
+	let sourceHost = '';
+	let path = '';
 	const params = { sort };
 
+	// Check if adult content should be hidden (setting can be string "true"/"false" or boolean)
+	const hideAdult = _settings.hideNSFWContent === 'true' || _settings.hideNSFWContent === true;
+
+	if (state.isHomeContentSepiaSearch) {
+		// Use Sepia Search for home content
+		sourceHost = 'https://sepiasearch.org';
+		path = '/api/v1/search/videos';
+		params.resultType = 'videos';
+		params.nsfw = hideAdult ? 'false' : 'both';
+
+		// Map PeerTube sort options to Sepia Search equivalents
+		const sepiaSearchSortMap = {
+			'best': 'match',           // Best algorithm -> relevance match
+			'-publishedAt': '-createdAt', // Newest -> most recent
+			'publishedAt': 'createdAt',   // Oldest -> least recent
+			'-views': '-views',        // Most Views -> same
+			'-likes': '-likes',        // Most Likes -> same
+			'-trending': '-views',     // Trending -> most views (closest equivalent)
+			'-hot': '-views'           // Hot -> most views (closest equivalent)
+		};
+
+		params.sort = sepiaSearchSortMap[sort] || 'match';
+	} else {
+		// Use current instance for home content
+		sourceHost = plugin.config.constants.baseUrl;
+		path = '/api/v1/videos';
+		// Apply NSFW filter for current instance too
+		if (hideAdult) {
+			params.nsfw = 'false';
+		}
+	}
+
 	// The getVideoPager will handle API errors if the sort option is not supported
-	return getVideoPager('/api/v1/videos', params, 0);
+	return getVideoPager(path, params, 0, sourceHost, state.isHomeContentSepiaSearch);
 };
 
 source.searchSuggestions = function (query) {

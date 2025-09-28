@@ -22,6 +22,30 @@
 	},
 	"settings": [
 		{
+			"variable": "homeHeader",
+			"name": "Home Content",
+			"description": "Options for home feed content",
+			"type": "Header"
+		},
+		{
+			"variable": "homeContentSourceIndex",
+			"name": "Content Source",
+			"description": "Choose where to load home videos from. 'Current instance' loads videos from your configured PeerTube instance. 'Sepia Search' loads videos from across all indexed PeerTube instances via sepiasearch.org.",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"Current instance",
+				"Sepia Search"
+			]
+		},
+		{
+			"variable": "hideNSFWContent",
+			"name": "Hide NSFW Content",
+			"description": "Hide adult/NSFW content from home feed. This applies to both 'Current instance' and 'Sepia Search' content sources.",
+			"type": "Boolean",
+			"default": "true"
+		},
+		{
 			"variable": "searchEngineIndex",
 			"name": "Search Engine",
 			"description": "Choose how to search for PeerTube content. 'Current Instance' searches within the instance you're using and its followed instances. 'Sepia Search' searches across all indexed PeerTube instances via sepiasearch.org.",
@@ -31,13 +55,6 @@
 				"Current Instance",
 				"Sepia Search"
 			]
-		},
-		{
-			"variable": "submitActivity",
-			"name": "Report Views",
-			"description": "Report viewing activity to PeerTube instances. After a while, the instance will use this information to increase the video's viewer counter.",
-			"type": "Boolean",
-			"default": "true"
 		},
 		{
 			"variable": "homeFeedSortIndex",
@@ -54,12 +71,30 @@
 				"Trending",
 				"Hot"
 			]
+		},
+		{
+			"variable": "AnalyticsHeader",
+			"name": "Analytics",
+			"description": "",
+			"type": "Header"
+		},
+		{
+			"variable": "submitActivity",
+			"name": "Report Views",
+			"description": "Report viewing activity to PeerTube instances. After a while, the instance will use this information to increase the video's viewer counter.",
+			"type": "Boolean",
+			"default": "true"
 		}
+		
 	],
 	"changelog": {
 		"25": [
+			"Add home feed source setting to choose between 'Current instance' and 'Sepia Search' for home feed videos;",
 			"Add home feed sorting settings to customize how videos are displayed on the home page (Best, Newest, Oldest, Most Views, Most Likes, Trending, Hot);",
 			"Change default home feed sorting from Best to Newest for better compatibility with all PeerTube instances;",
+			"Add NSFW content filter setting to hide NSFW content from home feed (enabled by default, applies to both content sources);",
+			"Add search for channel contents within a channel;",
+			"Add banner support for channels on PeerTube v6.0.0+ instances;",
 			"Update known instances from https://instances.joinpeertube.org, https://api.fediverse.observer/, and https://api.fedidb.org/"
 		],
 		"24": [
