@@ -93,6 +93,7 @@
 			"Add home feed sorting settings to customize how videos are displayed on the home page (Best, Newest, Oldest, Most Views, Most Likes, Trending, Hot);",
 			"Change default home feed sorting from Best to Newest for better compatibility with all PeerTube instances;",
 			"Add NSFW content filter setting to hide NSFW content from home feed (enabled by default, applies to both content sources);",
+			"Add support for live chat window on PeerTube videos (Peertube plugin);",
 			"Add search for channel contents within a channel;",
 			"Add banner support for channels on PeerTube v6.0.0+ instances;",
 			"Update known instances from https://instances.joinpeertube.org, https://api.fediverse.observer/, and https://api.fedidb.org/"

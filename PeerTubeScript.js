@@ -758,6 +758,58 @@ source.getSubComments = function (comment) {
 	}
 }
 
+/**
+ * Returns chat window information for live PeerTube videos with chat
+ * @param {string} url - The video URL
+ * @returns {Object|null} Chat window configuration or null if chat not available
+ */
+source.getLiveChatWindow = function (url) {
+    // Extract video ID and base URL
+    const videoId = extractVideoId(url);
+    if (!videoId) {
+        return null;
+    }
+    
+    const sourceBaseUrl = getBaseUrl(url);
+    
+    // Check if the video is live and has chat enabled
+    try {
+        const videoResponse = http.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, {});
+        if (!videoResponse.isOk) {
+            return null;
+        }
+        
+        const videoData = JSON.parse(videoResponse.body);
+        
+        // Only proceed if the video is live
+        if (!videoData.isLive) {
+            return null;
+        }
+        
+        // Check if the livechat plugin is enabled for this video
+        const hasLiveChat = !!videoData.pluginData?.['livechat-active'];
+        
+        if (!hasLiveChat) {
+            return null;
+        }
+        
+        // Use the correct chat URL format
+        const chatUrl = `${sourceBaseUrl}/p/livechat/room?room=${videoId}`;
+        
+        // Return the chat window configuration
+        return {
+            url: chatUrl,
+            // Remove header elements that might be present in the chat iframe
+            removeElements: ["header.root-header"],
+            // Elements to periodically remove (like banners, etc.)
+            removeElementsInterval: []
+        };
+    } catch (ex) {
+        log("Error getting live chat window:", ex);
+        return null;
+    }
+}
+
 
 // Add PlaybackTracker implementation
 source.getPlaybackTracker = function (url) {
