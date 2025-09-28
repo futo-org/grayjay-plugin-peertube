@@ -154,10 +154,101 @@ source.searchSuggestions = function (query) {
 	return [];
 };
 source.getSearchCapabilities = () => {
-	return {
-		types: [Type.Feed.Mixed, Type.Feed.Streams, Type.Feed.Videos],
-		sorts: [Type.Order.Chronological, "publishedAt"]
-	};
+	return new ResultCapabilities([Type.Feed.Mixed, Type.Feed.Videos], [], [
+		new FilterGroup("Upload Date", [
+			new FilterCapability("Last Hour", 1, Type.Date.LastHour),
+			new FilterCapability("This Day", 2, Type.Date.Today),
+			new FilterCapability("This Week", 3, Type.Date.LastWeek),
+			new FilterCapability("This Month", 4, Type.Date.LastMonth),
+			new FilterCapability("This Year", 5, Type.Date.LastYear),
+		], false, "date"),
+		new FilterGroup("Duration", [
+			new FilterCapability("Under 4 minutes", 1, Type.Duration.Short),
+			new FilterCapability("4-20 minutes", 3, Type.Duration.Medium),
+			new FilterCapability("Over 20 minutes", 2, Type.Duration.Long)
+		], false, "duration"),
+		new FilterGroup("Features", [
+			new FilterCapability("Live", "live", "live"),
+		], true, "features"),
+		new FilterGroup("License", [
+			new FilterCapability("Attribution", "1"),
+			new FilterCapability("Attribution - Share Alike", "2"),
+			new FilterCapability("Attribution - No Derivatives", "3"),
+			new FilterCapability("Attribution - Non Commercial", "4"),
+			new FilterCapability("Attribution - Non Commercial - Share Alike", "5"),
+			new FilterCapability("Attribution - Non Commercial - No Derivatives", "6"),
+			new FilterCapability("Public Domain Dedication", "7"),
+		], true, "license"),
+		new FilterGroup("Content", [
+			new FilterCapability("All Content", "all_content"),
+			new FilterCapability("Safe Content Only", "safe_only"),
+			new FilterCapability("NSFW Content Only", "nsfw_only"),
+		], false, "nsfw"),
+		new FilterGroup("Category", [
+			new FilterCapability("Music", "1"),
+			new FilterCapability("Films", "2"),
+			new FilterCapability("Vehicles", "3"),
+			new FilterCapability("Art", "4"),
+			new FilterCapability("Sports", "5"),
+			new FilterCapability("Travels", "6"),
+			new FilterCapability("Gaming", "7"),
+			new FilterCapability("People", "8"),
+			new FilterCapability("Comedy", "9"),
+			new FilterCapability("Entertainment", "10"),
+			new FilterCapability("News & Politics", "11"),
+			new FilterCapability("How To", "12"),
+			new FilterCapability("Education", "13"),
+			new FilterCapability("Activism", "14"),
+			new FilterCapability("Science & Technology", "15"),
+			new FilterCapability("Animals", "16"),
+			new FilterCapability("Kids", "17"),
+			new FilterCapability("Food", "18"),
+		], true, "category"),
+		new FilterGroup("Language", [
+			new FilterCapability("English", "en"),
+			new FilterCapability("Français", "fr"),
+			new FilterCapability("العربية", "ar"),
+			new FilterCapability("Català", "ca"),
+			new FilterCapability("Čeština", "cs"),
+			new FilterCapability("Deutsch", "de"),
+			new FilterCapability("ελληνικά", "el"),
+			new FilterCapability("Esperanto", "eo"),
+			new FilterCapability("Español", "es"),
+			new FilterCapability("Euskara", "eu"),
+			new FilterCapability("فارسی", "fa"),
+			new FilterCapability("Suomi", "fi"),
+			new FilterCapability("Gàidhlig", "gd"),
+			new FilterCapability("Galego", "gl"),
+			new FilterCapability("Hrvatski", "hr"),
+			new FilterCapability("Magyar", "hu"),
+			new FilterCapability("Íslenska", "is"),
+			new FilterCapability("Italiano", "it"),
+			new FilterCapability("日本語", "ja"),
+			new FilterCapability("Taqbaylit", "kab"),
+			new FilterCapability("Nederlands", "nl"),
+			new FilterCapability("Norsk", "no"),
+			new FilterCapability("Occitan", "oc"),
+			new FilterCapability("Polski", "pl"),
+			new FilterCapability("Português (Brasil)", "pt"),
+			new FilterCapability("Português (Portugal)", "pt-PT"),
+			new FilterCapability("Pусский", "ru"),
+			new FilterCapability("Slovenčina", "sk"),
+			new FilterCapability("Shqip", "sq"),
+			new FilterCapability("Svenska", "sv"),
+			new FilterCapability("ไทย", "th"),
+			new FilterCapability("Toki Pona", "tok"),
+			new FilterCapability("Türkçe", "tr"),
+			new FilterCapability("украї́нська мо́ва", "uk"),
+			new FilterCapability("Tiếng Việt", "vi"),
+			new FilterCapability("简体中文（中国）", "zh-Hans"),
+			new FilterCapability("繁體中文（台灣）", "zh-Hant"),
+		], true, "language"),
+		new FilterGroup("Search Scope", [
+			new FilterCapability("Federated Network", "federated"),
+			new FilterCapability("Local Instance Only", "local"),
+			new FilterCapability("Sepia Search", "sepia"),
+		], false, "scope")
+	]);
 };
 source.search = function (query, type, order, filters) {
 
@@ -181,11 +272,117 @@ source.search = function (query, type, order, filters) {
 		params.isLive = false;
 	}
 
+	// Apply filters (YouTube-style object structure)
+	if (filters) {
+		// Date filter
+		if (filters.date && filters.date.length > 0) {
+			const dateFilter = filters.date[0];
+			const now = new Date();
+			if (dateFilter === Type.Date.LastHour) {
+				const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+				params.publishedAfter = oneHourAgo.toISOString();
+			} else if (dateFilter === Type.Date.Today) {
+				const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+				params.publishedAfter = startOfDay.toISOString();
+			} else if (dateFilter === Type.Date.LastWeek) {
+				const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+				params.publishedAfter = oneWeekAgo.toISOString();
+			} else if (dateFilter === Type.Date.LastMonth) {
+				const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+				params.publishedAfter = oneMonthAgo.toISOString();
+			} else if (dateFilter === Type.Date.LastYear) {
+				const startOfYear = new Date(now.getFullYear(), 0, 1);
+				params.publishedAfter = startOfYear.toISOString();
+			}
+		}
+
+		// Duration filter
+		if (filters.duration && filters.duration.length > 0) {
+			const durationFilter = filters.duration[0];
+			if (durationFilter === Type.Duration.Short) {
+				params.durationMax = 240; // Under 4 minutes
+			} else if (durationFilter === Type.Duration.Medium) {
+				params.durationMin = 240; // 4 minutes
+				params.durationMax = 1200; // 20 minutes
+			} else if (durationFilter === Type.Duration.Long) {
+				params.durationMin = 1200; // Over 20 minutes
+			}
+		}
+
+		// Features filter (multi-select)
+		if (filters.features && filters.features.length > 0) {
+			// Check if "live" is selected
+			const hasLive = filters.features.includes("live");
+			if (hasLive) {
+				params.isLive = true;
+			}
+			// Note: If live is not selected, we don't set isLive parameter
+			// This allows both live and non-live videos to be returned
+		}
+
+		// NSFW Content filter
+		if (filters.nsfw && filters.nsfw.length > 0) {
+			const nsfwFilter = filters.nsfw[0];
+			if (nsfwFilter === "safe_only") {
+				params.nsfw = "false";
+			} else if (nsfwFilter === "nsfw_only") {
+				params.nsfw = "true";
+			}
+			// "all_content" doesn't set any filter
+		}
+
+		// Category filter (multi-select)
+		if (filters.category && filters.category.length > 0) {
+			params.categoryOneOf = filters.category.join(',');
+		}
+
+		// Language filter (multi-select)
+		if (filters.language && filters.language.length > 0) {
+			params.languageOneOf = filters.language.join(',');
+		}
+
+		// License filter (multi-select)
+		if (filters.license && filters.license.length > 0) {
+			params.licenceOneOf = filters.license.join(',');
+		}
+
+		// Search Scope filter
+		if (filters.scope && filters.scope.length > 0) {
+			const scopeFilter = filters.scope[0];
+			if (scopeFilter === "sepia") {
+				// Force Sepia Search mode - use Sepia Search directly
+				const sepiaParams = {
+					search: query,
+					resultType: 'videos',
+					nsfw: params.nsfw || 'both',
+					sort: '-createdAt'
+				};
+
+				// Apply other filters to Sepia Search
+				if (params.categoryOneOf) sepiaParams.categoryOneOf = params.categoryOneOf;
+				if (params.languageOneOf) sepiaParams.languageOneOf = params.languageOneOf;
+				if (params.durationMin) sepiaParams.durationMin = params.durationMin;
+				if (params.durationMax) sepiaParams.durationMax = params.durationMax;
+				if (params.publishedAfter) sepiaParams.publishedAfter = params.publishedAfter;
+				if (params.isLive !== undefined) sepiaParams.isLive = params.isLive;
+				if (params.licenceOneOf) sepiaParams.licenceOneOf = params.licenceOneOf;
+
+				return getVideoPager('/api/v1/search/videos', sepiaParams, 0, 'https://sepiasearch.org', true);
+			} else if (scopeFilter === "local" && !state.isSearchEngineSepiaSearch) {
+				params.searchTarget = "local";
+			}
+			// "federated" means federated (default), so no parameter needed
+		}
+	}
+
 	let sourceHost = '';
 
 	if (state.isSearchEngineSepiaSearch) {
 		params.resultType = 'videos';
-		params.nsfw = false;
+		// For Sepia Search, ensure consistent nsfw parameter format
+		if (!params.nsfw) {
+			params.nsfw = 'both';
+		}
 		params.sort = '-createdAt'
 		sourceHost = 'https://sepiasearch.org'
 	} else {
