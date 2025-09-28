@@ -269,7 +269,7 @@ source.getChannel = function (url) {
 		id: new PlatformID(PLATFORM, obj.name, config.id),
 		name: obj.displayName || obj.name || handle,
 		thumbnail: getAvatarUrl(obj, sourceBaseUrl),
-		banner: null,
+		banner: getBannerUrl(obj, sourceBaseUrl),
 		subscribers: obj.followersCount || 0,
 		description: obj.description ?? "",
 		url: channelUrlWithHint,
@@ -1155,6 +1155,35 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 	}
 
 	return URLS.PEERTUBE_LOGO;
+}
+
+/**
+* Find and return the banner URL from various potential locations to support different Peertube instance versions
+* @param {object} obj
+* @param {string} baseUrl - The base URL of the PeerTube instance
+* @returns {String} Banner URL or null if no banner is available
+*/
+function getBannerUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
+
+	const relativePath = [
+		// PeerTube v6.0.0+ - banners array (get the largest banner)
+		obj?.banners?.length ? obj.banners[obj.banners.length - 1].path : "",
+		obj?.channel?.banners?.length ? obj.channel.banners[obj.channel.banners.length - 1].path : "",
+		obj?.account?.banners?.length ? obj.account.banners[obj.account.banners.length - 1].path : "",
+		obj?.ownerAccount?.banners?.length ? obj.ownerAccount.banners[obj.ownerAccount.banners.length - 1].path : "",
+		// Legacy single banner support (if it exists in older versions)
+		obj?.banner?.path,
+		obj?.channel?.banner?.path,
+		obj?.account?.banner?.path,
+		obj?.ownerAccount?.banner?.path
+	].find(v => v); // Get the first non-empty value
+
+	if (relativePath) {
+		return `${baseUrl}${relativePath}`;
+	}
+
+	// Return null instead of a fallback banner to maintain clean UI
+	return null;
 }
 
 /**
