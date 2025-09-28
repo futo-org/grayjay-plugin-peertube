@@ -315,6 +315,24 @@ source.getChannelContents = function (url, type, order, filters) {
 	}
 };
 
+source.searchChannelContents = function (channelUrl, query, type, order, filters) {
+
+	const handle = extractChannelId(channelUrl);
+	const sourceBaseUrl = getBaseUrl(channelUrl);
+
+	if (!handle) {
+		throw new ScriptException(`Failed to extract channel ID from URL: ${channelUrl}`);
+	}
+
+	const params = {
+		search: query.trim(),
+		sort: "-publishedAt"
+	};
+
+	// Use the channel-specific videos endpoint with search parameter
+	return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl);
+};
+
 source.getChannelPlaylists = function (url, order, filters) {
 	let sort = order;
 	if (sort === Type.Order.Chronological) {
