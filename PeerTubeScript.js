@@ -39,15 +39,16 @@ source.enable = function (conf, settings, saveStateStr) {
 
 	SEARCH_ENGINE_OPTIONS = loadOptionsForSetting('searchEngineIndex');
 	HOME_CONTENT_SOURCE_OPTIONS = loadOptionsForSetting('homeContentSourceIndex');
-
 	let didSaveState = false;
 
-	if (IS_TESTING) {
-
-		_settings.searchEngineIndex = 0; //Current Instance
-		_settings.submitActivity = true;
-		_settings.homeContentSourceIndex = 0; //Current instance
-		_settings.hideNSFWContent = true; //Hide adult content by default
+	if (IS_TESTING && !plugin?.config?.constants?.baseUrl) {
+		plugin = {
+			config: {
+				constants: {
+					baseUrl: "https://peertube.futo.org"
+				}
+			}
+		};
 	}
 
 	try {
@@ -117,12 +118,50 @@ source.getHome = function () {
 	// Check if adult content should be hidden (setting can be string "true"/"false" or boolean)
 	const hideAdult = _settings.hideNSFWContent === 'true' || _settings.hideNSFWContent === true;
 
+	// Collect category filters from settings
+	const settingSet = new Set([
+		_settings.mainCategoryIndex,
+		_settings.secondCategoryIndex,
+		_settings.thirdCategoryIndex,
+		_settings.fourthCategoryIndex,
+		_settings.fifthCategoryIndex
+	]);
+
+	const categoryIds = Array.from(settingSet)
+		.filter(categoryIndex => categoryIndex && parseInt(categoryIndex) > 0)
+		.map(categoryIndex => getCategoryId(categoryIndex))
+		.filter(Boolean);
+
+	// Collect language filters from settings
+	const languageSettingSet = new Set([
+		_settings.firstLanguageIndex,
+		_settings.secondLanguageIndex,
+		_settings.thirdLanguageIndex
+	]);
+
+	const languageCodes = Array.from(languageSettingSet)
+		.filter(languageIndex => languageIndex && parseInt(languageIndex) > 0)
+		.map(languageIndex => getLanguageCode(languageIndex))
+		.filter(Boolean);
+
+
+
 	if (state.isHomeContentSepiaSearch) {
 		// Use Sepia Search for home content
 		sourceHost = 'https://sepiasearch.org';
 		path = '/api/v1/search/videos';
 		params.resultType = 'videos';
 		params.nsfw = hideAdult ? 'false' : 'both';
+
+		// Apply category filtering for Sepia Search
+		if (categoryIds.length > 0) {
+			params.categoryOneOf = categoryIds;
+		}
+
+		// Apply language filtering for Sepia Search
+		if (languageCodes.length > 0) {
+			params.languageOneOf = languageCodes;
+		}
 
 		// Map PeerTube sort options to Sepia Search equivalents
 		const sepiaSearchSortMap = {
@@ -143,6 +182,16 @@ source.getHome = function () {
 		// Apply NSFW filter for current instance too
 		if (hideAdult) {
 			params.nsfw = 'false';
+		}
+
+		// Apply category filtering for current instance
+		if (categoryIds.length > 0) {
+			params.categoryOneOf = categoryIds;
+		}
+
+		// Apply language filtering for current instance
+		if (languageCodes.length > 0) {
+			params.languageOneOf = languageCodes;
 		}
 	}
 
@@ -338,17 +387,17 @@ source.search = function (query, type, order, filters) {
 
 		// Category filter (multi-select)
 		if (filters.category && filters.category.length > 0) {
-			params.categoryOneOf = filters.category.join(',');
+			params.categoryOneOf = filters.category;
 		}
 
 		// Language filter (multi-select)
 		if (filters.language && filters.language.length > 0) {
-			params.languageOneOf = filters.language.join(',');
+			params.languageOneOf = filters.language;
 		}
 
 		// License filter (multi-select)
 		if (filters.license && filters.license.length > 0) {
-			params.licenceOneOf = filters.license.join(',');
+			params.licenceOneOf = filters.license;
 		}
 
 		// Search Scope filter
@@ -1844,6 +1893,73 @@ function getTagPlaylist(url) {
 		log("Error creating tag playlist", e);
 		return null;
 	}
+}
+
+
+
+
+
+// Helper function to map category indices to IDs
+function getCategoryId(categoryIndex) {
+	// Convert index to category ID
+	// Index 0 = "" (no category), Index 1 = "1" (Music), Index 2 = "2" (Films), etc.
+
+	const index = parseInt(categoryIndex);
+
+	if (index >= 1 && index <= 18) {
+		return index.toString();
+	}
+	return null;
+}
+
+// Helper function to map language indices to language codes
+function getLanguageCode(languageIndex) {
+	const languageMap = [
+		"", // Index 0 = empty
+		"en", // Index 1 = English
+		"fr", // Index 2 = Français
+		"ar", // Index 3 = العربية
+		"ca", // Index 4 = Català
+		"cs", // Index 5 = Čeština
+		"de", // Index 6 = Deutsch
+		"el", // Index 7 = ελληνικά
+		"eo", // Index 8 = Esperanto
+		"es", // Index 9 = Español
+		"eu", // Index 10 = Euskara
+		"fa", // Index 11 = فارسی
+		"fi", // Index 12 = Suomi
+		"gd", // Index 13 = Gàidhlig
+		"gl", // Index 14 = Galego
+		"hr", // Index 15 = Hrvatski
+		"hu", // Index 16 = Magyar
+		"is", // Index 17 = Íslenska
+		"it", // Index 18 = Italiano
+		"ja", // Index 19 = 日本語
+		"kab", // Index 20 = Taqbaylit
+		"nl", // Index 21 = Nederlands
+		"no", // Index 22 = Norsk
+		"oc", // Index 23 = Occitan
+		"pl", // Index 24 = Polski
+		"pt", // Index 25 = Português (Brasil)
+		"pt-PT", // Index 26 = Português (Portugal)
+		"ru", // Index 27 = Pусский
+		"sk", // Index 28 = Slovenčina
+		"sq", // Index 29 = Shqip
+		"sv", // Index 30 = Svenska
+		"th", // Index 31 = ไทย
+		"tok", // Index 32 = Toki Pona
+		"tr", // Index 33 = Türkçe
+		"uk", // Index 34 = украї́нська мо́ва
+		"vi", // Index 35 = Tiếng Việt
+		"zh-Hans", // Index 36 = 简体中文（中国）
+		"zh-Hant" // Index 37 = 繁體中文（台灣）
+	];
+
+	const index = parseInt(languageIndex);
+	if (index >= 1 && index < languageMap.length) {
+		return languageMap[index];
+	}
+	return null;
 }
 
 // Those instances were requested by users
