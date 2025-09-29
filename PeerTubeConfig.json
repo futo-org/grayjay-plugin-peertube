@@ -354,11 +354,16 @@
 			"type": "Header"
 		},
 		{
-			"variable": "hideNSFWContent",
-			"name": "Hide NSFW Content",
-			"description": "Hide adult/NSFW content from all feeds and searches. This applies to home feed, search results, channel contents, playlists, and recommendations.",
-			"type": "Boolean",
-			"default": "true"
+			"variable": "nsfwPolicy",
+			"name": "Policy for sensitive content",
+			"description": "Choose how to handle adult/NSFW content in all feeds and searches. This applies to home feed, search results, channel contents, playlists, and recommendations.",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"Hide all",
+				"Hide thumbnails",
+				"Display all"
+			]
 		},
 		{
 			"variable": "AnalyticsHeader",

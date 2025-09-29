@@ -81,13 +81,6 @@ source.saveState = function () {
 	return JSON.stringify(state)
 }
 
-/**
- * Helper function to check if NSFW content should be hidden based on settings
- * @returns {boolean} true if NSFW content should be hidden
- */
-function shouldHideNSFWContent() {
-	return _settings.hideNSFWContent === 'true' || _settings.hideNSFWContent === true;
-}
 
 source.getHome = function () {
 
@@ -1290,9 +1283,15 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count };
 
-	// Apply NSFW filtering if setting is enabled and no explicit nsfw parameter is set
-	if (shouldHideNSFWContent() && !params.hasOwnProperty('nsfw')) {
-		params.nsfw = 'false';
+	// Apply NSFW filtering based on policy and no explicit nsfw parameter is set
+	if (!params.hasOwnProperty('nsfw')) {
+		const nsfwPolicy = getNSFWPolicy();
+		if (nsfwPolicy === "do_not_list") {
+			params.nsfw = 'false';
+		} else {
+			// For "blur" and "display" policies, set nsfw=both to allow all content
+			params.nsfw = 'both';
+		}
 	}
 
 	const url = `${sourceHost}${path}`;
@@ -1334,11 +1333,24 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 		const contentUrl = addContentUrlHint(v.url || `${baseUrl}/videos/watch/${v.uuid}`);
 		const instanceBaseUrl = isSearch ? baseUrl : sourceHost;
 		const channelUrl = addChannelUrlHint(v.channel.url);
-		
+
+		// Handle NSFW content based on policy
+		const nsfwPolicy = getNSFWPolicy();
+		const isNSFW = v.nsfw === true;
+		let thumbnails;
+
+		if (isNSFW && nsfwPolicy === "blur") {
+			// Create empty thumbnail for NSFW content
+			thumbnails = new Thumbnails([]);
+		} else {
+			// Normal thumbnail
+			thumbnails = new Thumbnails([new Thumbnail(`${instanceBaseUrl}${v.thumbnailPath}`, 0)]);
+		}
+
 		return new PlatformVideo({
 			id: new PlatformID(PLATFORM, v.uuid, config.id),
 			name: v.name ?? "",
-			thumbnails: new Thumbnails([new Thumbnail(`${instanceBaseUrl}${v.thumbnailPath}`, 0)]),
+			thumbnails: thumbnails,
 			author: new PlatformAuthorLink(
 				new PlatformID(PLATFORM, v.channel.name, config.id),
 				v.channel.displayName,
@@ -1679,7 +1691,7 @@ function extractChannelId(url) {
 		const { pathname } = urlTest;
 
 		// Regex to match and extract the channel ID from /c/, /video-channels/, and /api/v1/video-channels/ URLs
-		const match = pathname.match(/^\/(c|video-channels|api\/v1\/video-channels)\/([a-zA-Z0-9-_.]+)(?:\/(video|videos)?)?\/?$/);
+		const match = pathname.match(/^\/(c|video-channels|api\/v1\/video-channels)\/([a-zA-Z0-9-_.@]+)(?:\/(video|videos)?)?\/?$/);
 
 		return match ? match[2] : null; // match[2] contains the extracted channel ID
 	} catch (error) {
@@ -1896,10 +1908,6 @@ function getTagPlaylist(url) {
 	}
 }
 
-
-
-
-
 // Helper function to map category indices to IDs
 function getCategoryId(categoryIndex) {
 	// Convert index to category ID
@@ -1961,6 +1969,17 @@ function getLanguageCode(languageIndex) {
 		return languageMap[index];
 	}
 	return null;
+}
+
+
+/**
+ * Helper function to get the NSFW policy from settings
+ * @returns {string} The NSFW policy: "do_not_list", "blur", or "display"
+ */
+function getNSFWPolicy() {
+	const policyIndex = parseInt(_settings.nsfwPolicy) || 0;
+	const policies = ["do_not_list", "blur", "display"];
+	return policies[policyIndex] || "do_not_list";
 }
 
 // Those instances were requested by users
