@@ -256,6 +256,11 @@ source.search = function (query, type, order, filters) {
 		return new ContentPager([source.getContentDetails(query)], false);
 	}
 
+	// Handle tag search URLs as playlists
+	if(source.isPlaylistUrl(query)) {
+		return new PlaylistPager([source.getPlaylist(query)], false);
+	}
+
 	let sort = order;
 	if (sort === Type.Order.Chronological) {
 		sort = "-publishedAt";
@@ -591,7 +596,13 @@ source.isPlaylistUrl = function(url) {
 		if (!url) return false;
 
 		// Check for URL hint
-		if (url.includes('isPeertubePlaylist=1')) {
+		if (url.includes('isPeertubePlaylist=1') || url.includes('isPeertubeTagSearch=1')) {
+			return true;
+		}
+
+		// Check for tag search URLs
+		const urlObj = new URL(url);
+		if (urlObj.pathname === '/search' && urlObj.searchParams.has('tagsOneOf')) {
 			return true;
 		}
 
@@ -635,6 +646,16 @@ source.isPlaylistUrl = function(url) {
 
 // Gets a playlist and its information
 source.getPlaylist = function(url) {
+	// Check if this is a tag search URL
+	try {
+		const urlObj = new URL(url);
+		if (urlObj.pathname === '/search' && urlObj.searchParams.has('tagsOneOf')) {
+			return getTagPlaylist(url);
+		}
+	} catch (e) {
+		// Continue with regular playlist handling
+	}
+
 	const playlistId = extractPlaylistId(url);
 	if (!playlistId) {
 		return null;
@@ -1777,6 +1798,51 @@ function getMediaDescriptor(obj) {
 		}
 		// Fallback to empty video source descriptor if no sources are found
 		return new VideoSourceDescriptor([]);
+	}
+}
+
+
+// Helper function to create a tag playlist from a tag search URL
+function getTagPlaylist(url) {
+	try {
+		const urlObj = new URL(url);
+		const sourceBaseUrl = `${urlObj.protocol}//${urlObj.host}`;
+		const tagsOneOf = urlObj.searchParams.get('tagsOneOf');
+
+		if (!tagsOneOf) {
+			return null;
+		}
+
+		// Create playlist URL with hint
+		const playlistUrl = `${url}&isPeertubeTagSearch=1`;
+
+		return new PlatformPlaylistDetails({
+			id: new PlatformID(PLATFORM, `tag-${tagsOneOf}`, config.id),
+			name: `Tag: ${tagsOneOf}`,
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, "tags", config.id),
+				sourceBaseUrl.replace(/^https?:\/\//, ''),
+				sourceBaseUrl,
+				null
+			),
+			thumbnail: null,
+			videoCount: -1,
+			url: playlistUrl,
+			contents: getVideoPager(
+				'/api/v1/search/videos',
+				{
+					tagsOneOf: tagsOneOf,
+					sort: '-match',
+					searchTarget: 'local'
+				},
+				0,
+				sourceBaseUrl,
+				true
+			)
+		});
+	} catch (e) {
+		log("Error creating tag playlist", e);
+		return null;
 	}
 }
 
