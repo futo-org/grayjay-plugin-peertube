@@ -81,6 +81,14 @@ source.saveState = function () {
 	return JSON.stringify(state)
 }
 
+/**
+ * Helper function to check if NSFW content should be hidden based on settings
+ * @returns {boolean} true if NSFW content should be hidden
+ */
+function shouldHideNSFWContent() {
+	return _settings.hideNSFWContent === 'true' || _settings.hideNSFWContent === true;
+}
+
 source.getHome = function () {
 
 	let sort = '';
@@ -115,8 +123,7 @@ source.getHome = function () {
 	let path = '';
 	const params = { sort };
 
-	// Check if adult content should be hidden (setting can be string "true"/"false" or boolean)
-	const hideAdult = _settings.hideNSFWContent === 'true' || _settings.hideNSFWContent === true;
+
 
 	// Collect category filters from settings
 	const settingSet = new Set([
@@ -151,7 +158,6 @@ source.getHome = function () {
 		sourceHost = 'https://sepiasearch.org';
 		path = '/api/v1/search/videos';
 		params.resultType = 'videos';
-		params.nsfw = hideAdult ? 'false' : 'both';
 
 		// Apply category filtering for Sepia Search
 		if (categoryIds.length > 0) {
@@ -179,10 +185,6 @@ source.getHome = function () {
 		// Use current instance for home content
 		sourceHost = plugin.config.constants.baseUrl;
 		path = '/api/v1/videos';
-		// Apply NSFW filter for current instance too
-		if (hideAdult) {
-			params.nsfw = 'false';
-		}
 
 		// Apply category filtering for current instance
 		if (categoryIds.length > 0) {
@@ -408,7 +410,6 @@ source.search = function (query, type, order, filters) {
 				const sepiaParams = {
 					search: query,
 					resultType: 'videos',
-					nsfw: params.nsfw || 'both',
 					sort: '-createdAt'
 				};
 
@@ -420,6 +421,7 @@ source.search = function (query, type, order, filters) {
 				if (params.publishedAfter) sepiaParams.publishedAfter = params.publishedAfter;
 				if (params.isLive !== undefined) sepiaParams.isLive = params.isLive;
 				if (params.licenceOneOf) sepiaParams.licenceOneOf = params.licenceOneOf;
+				if (params.nsfw) sepiaParams.nsfw = params.nsfw;
 
 				return getVideoPager('/api/v1/search/videos', sepiaParams, 0, 'https://sepiasearch.org', true);
 			} else if (scopeFilter === "local" && !state.isSearchEngineSepiaSearch) {
@@ -433,10 +435,6 @@ source.search = function (query, type, order, filters) {
 
 	if (state.isSearchEngineSepiaSearch) {
 		params.resultType = 'videos';
-		// For Sepia Search, ensure consistent nsfw parameter format
-		if (!params.nsfw) {
-			params.nsfw = 'both';
-		}
 		params.sort = '-createdAt'
 		sourceHost = 'https://sepiasearch.org'
 	} else {
@@ -477,7 +475,6 @@ source.searchPlaylists = function (query) {
 	// For Sepia Search, add specific parameters
 	if (state.isSearchEngineSepiaSearch) {
 		params.resultType = 'video-playlists';
-		params.nsfw = false;
 		params.sort = '-createdAt';
 	}
 	
@@ -928,7 +925,6 @@ source.getContentRecommendations = function (url, obj) {
 
 	const params = {
 		skipCount: false,
-		nsfw: false,
 		tagsOneOf,
 		sort: "-publishedAt",
 		searchTarget: "local"
@@ -1292,7 +1288,12 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	const count = 20;
 	const start = (page ?? 0) * count;
-	params = { ...params, start, count }
+	params = { ...params, start, count };
+
+	// Apply NSFW filtering if setting is enabled and no explicit nsfw parameter is set
+	if (shouldHideNSFWContent() && !params.hasOwnProperty('nsfw')) {
+		params.nsfw = 'false';
+	}
 
 	const url = `${sourceHost}${path}`;
 
