@@ -366,6 +366,13 @@
 			]
 		},
 		{
+			"variable": "allowPlayNsfwContent",
+			"name": "Allow Playing Sensitive Content",
+			"description": "Allow playing of sensitive content. This also applies to deep linking sensitive content.",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
 			"variable": "AnalyticsHeader",
 			"name": "Analytics",
 			"description": "",
@@ -378,7 +385,6 @@
 			"type": "Boolean",
 			"default": "true"
 		}
-		
 	],
 	"changelog": {
 		"25": [

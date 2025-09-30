@@ -853,6 +853,11 @@ source.getContentDetails = function (url) {
 		return null;
 	}
 
+	// Check if content is sensitive and if playing NSFW content is disabled
+	if (obj.nsfw && !_settings.allowPlayNsfwContent) {
+		throw new UnavailableException("This video contains mature or explicit content. This warning can be disabled in the plugin settings.");
+	}
+
 	//Some older instance versions such as 3.0.0, may not contain the url property
 	// Add URL hints using utility functions
 	const contentUrl = addContentUrlHint(obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`);
