@@ -200,16 +200,16 @@ source.searchSuggestions = function (query) {
 source.getSearchCapabilities = () => {
 	return new ResultCapabilities([Type.Feed.Mixed, Type.Feed.Videos], [], [
 		new FilterGroup("Upload Date", [
-			new FilterCapability("Last Hour", 1, Type.Date.LastHour),
-			new FilterCapability("This Day", 2, Type.Date.Today),
-			new FilterCapability("This Week", 3, Type.Date.LastWeek),
-			new FilterCapability("This Month", 4, Type.Date.LastMonth),
-			new FilterCapability("This Year", 5, Type.Date.LastYear),
+			new FilterCapability("Last Hour", Type.Date.LastHour),
+			new FilterCapability("This Day", Type.Date.Today),
+			new FilterCapability("This Week", Type.Date.LastWeek),
+			new FilterCapability("This Month", Type.Date.LastMonth),
+			new FilterCapability("This Year", Type.Date.LastYear),
 		], false, "date"),
 		new FilterGroup("Duration", [
-			new FilterCapability("Under 4 minutes", 1, Type.Duration.Short),
-			new FilterCapability("4-20 minutes", 3, Type.Duration.Medium),
-			new FilterCapability("Over 20 minutes", 2, Type.Duration.Long)
+			new FilterCapability("Under 4 minutes", Type.Duration.Short),
+			new FilterCapability("4-20 minutes", Type.Duration.Medium),
+			new FilterCapability("Over 20 minutes", Type.Duration.Long)
 		], false, "duration"),
 		new FilterGroup("Features", [
 			new FilterCapability("Live", "live", "live"),
@@ -295,6 +295,16 @@ source.getSearchCapabilities = () => {
 	]);
 };
 source.search = function (query, type, order, filters) {
+	
+	if(IS_TESTING) {
+		/*
+		//filter example: 
+			{"duration": ["SHORT"]}
+		*/
+		if(typeof filters === 'string') {	
+			filters = JSON.parse(filters);
+		}
+	}
 
 	if(source.isContentDetailsUrl(query)) {
 		return new ContentPager([source.getContentDetails(query)], false);
