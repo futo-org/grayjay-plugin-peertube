@@ -577,6 +577,12 @@ source.getChannel = function (url) {
  * @returns {string[]} An array of subscription URLs.
  */
 source.getUserSubscriptions = function() {
+
+	if (!bridge.isLoggedIn()) {
+		bridge.log("Failed to retrieve subscriptions page because not logged in.");
+		throw new ScriptException("Not logged in");
+	}
+
 	const itemsPerPage = 100;
 	let subscriptionUrls = [];
 	
