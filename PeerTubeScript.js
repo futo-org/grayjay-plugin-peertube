@@ -659,6 +659,77 @@ source.getUserSubscriptions = function() {
 // 	return getHistoryVideoPager("/api/v1/users/me/history/videos", {}, 0);
 // };
 
+source.getUserPlaylists = function() {
+	const meRes = http.GET(`${plugin.config.constants.baseUrl}/api/v1/users/me`, {}, true);
+	if (meRes.code != 200) return [];
+	
+	const username = JSON.parse(meRes.body).account?.name;
+	if (!username) return [];
+
+	const itemsPerPage = 50;
+	let playlistUrls = [];
+	const endpointUrl = `${plugin.config.constants.baseUrl}/api/v1/accounts/${username}/video-playlists`;
+	const baseParams = { sort: '-updatedAt' };
+	
+	const initialResponse = http.GET(`${endpointUrl}${buildQuery({ ...baseParams, start: 0, count: itemsPerPage })}`, {}, true);
+	if (initialResponse.code != 200) return [];
+
+	const initialResponseBody = JSON.parse(initialResponse.body);
+	if (initialResponseBody.data) {
+		initialResponseBody.data.forEach(p => { 
+			if (p.uuid) {
+				playlistUrls.push(`${plugin.config.constants.baseUrl}/w/p/${p.uuid}`);
+			} else if (p.url) {
+				playlistUrls.push(p.url);
+			}
+		});
+	}
+
+	const total = initialResponseBody.total;
+	if (playlistUrls.length >= total) return playlistUrls;
+
+	const remainingPages = Math.ceil((total - playlistUrls.length) / itemsPerPage);
+
+	if (remainingPages > 1) {
+		const batch = http.batch();
+		for (let i = 1; i <= remainingPages; i++) {
+			batch.GET(`${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, {}, true);
+		}
+		batch.execute().forEach(r => {
+			if (r.isOk && r.code === 200) {
+				const data = JSON.parse(r.body).data;
+				if (data) {
+					data.forEach(p => { 
+						if (p.uuid) {
+							playlistUrls.push(`${plugin.config.constants.baseUrl}/w/p/${p.uuid}`);
+						} else if (p.url) {
+							playlistUrls.push(p.url);
+						}
+					});
+				}
+			}
+		});
+	} else {
+		for (let i = 1; i <= remainingPages; i++) {
+			const r = http.GET(`${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, {}, true);
+			if (r.code === 200) {
+				const data = JSON.parse(r.body).data;
+				if (data) {
+					data.forEach(p => { 
+						if (p.uuid) {
+							playlistUrls.push(`${plugin.config.constants.baseUrl}/w/p/${p.uuid}`);
+						} else if (p.url) {
+							playlistUrls.push(p.url);
+						}
+					});
+				}
+			}
+		}
+	}
+	
+	return playlistUrls;
+};
+
 source.getChannelCapabilities = () => {
 	return {
 		types: [Type.Feed.Mixed, Type.Feed.Streams, Type.Feed.Videos, Type.Feed.Playlists],
@@ -805,7 +876,7 @@ source.getPlaylist = function(url) {
 	const sourceBaseUrl = getBaseUrl(url);
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-playlists/${playlistId}`;
 	
-	const res = http.GET(urlWithParams, {});
+	const res = http.GET(urlWithParams, {}, true);
 	
 	if (res.code != 200) {
 		log("Failed to get playlist", res);
@@ -842,7 +913,8 @@ source.getPlaylist = function(url) {
 			(playlistItem) => {
 				
 				return playlistItem.video;
-			}
+			},
+			true
 		)
 	});
 };
@@ -1274,12 +1346,12 @@ class PeerTubePlaybackTracker extends PlaybackTracker {
 }
 
 class PeerTubeVideoPager extends VideoPager {
-	constructor(results, hasMore, path, params, page, sourceHost, isSearch, cbMap) {
-		super(results, hasMore, { path, params, page, sourceHost, isSearch, cbMap });
+	constructor(results, hasMore, path, params, page, sourceHost, isSearch, cbMap, useAuth) {
+		super(results, hasMore, { path, params, page, sourceHost, isSearch, cbMap, useAuth });
 	}
 
 	nextPage() {
-		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch, this.context.cbMap);
+		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch, this.context.cbMap, this.context.useAuth);
 	}
 }
 
@@ -1394,7 +1466,7 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 	}), obj.total > (start + count), path, params, page);
 }
 
-function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false, cbMap) {
+function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false, cbMap, useAuth = false) {
 
 	const count = 20;
 	const start = (page ?? 0) * count;
@@ -1415,7 +1487,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	const urlWithParams = `${url}${buildQuery(params)}`;
 
-	const res = http.GET(urlWithParams, {});
+	const res = http.GET(urlWithParams, {}, useAuth);
 
 
 	if (res.code != 200) {
@@ -1483,7 +1555,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	});
 
-	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap);
+	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap, useAuth);
 }
 
 function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {

@@ -398,6 +398,7 @@
 		"25": [
 			"Add instance authentication;",
 			"Import user subscriptions;",
+			"Import user playlists;",
 			"Add home feed source setting to choose between 'Current instance' and 'Sepia Search' for home feed videos;",
 			"Add home feed sorting settings to customize how videos are displayed on the home page (Best, Newest, Oldest, Most Views, Most Likes, Trending, Hot);",
 			"Add plugin settings to filter home feed content by multiple categories and languages;",
