@@ -567,6 +567,82 @@ source.getChannel = function (url) {
 		]
 	});
 };
+
+/**
+ * Retrieves the list of subscriptions for the authenticated user.
+ * 
+ * This function fetches all subscriptions from the PeerTube instance.
+ * It handles pagination automatically, using batch requests if multiple pages are needed
+ * 
+ * @returns {string[]} An array of subscription URLs.
+ */
+source.getUserSubscriptions = function() {
+	const itemsPerPage = 100;
+	let subscriptionUrls = [];
+	
+	const initialParams = { start: 0, count: itemsPerPage };
+	const endpointUrl = `${plugin.config.constants.baseUrl}/api/v1/users/me/subscriptions`;
+	const initialRequestUrl = `${endpointUrl}${buildQuery(initialParams)}`;
+	
+	const initialResponse = http.GET(initialRequestUrl, {}, true);
+
+	if (initialResponse.code != 200) {
+		log("Failed to get user subscriptions", initialResponse);
+		return [];
+	}
+
+	const initialResponseBody = JSON.parse(initialResponse.body);
+	
+	if (initialResponseBody.data && initialResponseBody.data.length > 0) {
+		initialResponseBody.data.forEach(subscription => {
+			if (subscription.url) subscriptionUrls.push(subscription.url);
+		});
+	}
+
+	const totalSubscriptions = initialResponseBody.total;
+	if (subscriptionUrls.length >= totalSubscriptions) {
+		return subscriptionUrls;
+	}
+
+	const remainingSubscriptions = totalSubscriptions - subscriptionUrls.length;
+	const remainingPages = Math.ceil(remainingSubscriptions / itemsPerPage);
+
+	if (remainingPages > 1) {
+		const batchRequest = http.batch();
+		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
+			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
+			batchRequest.GET(`${endpointUrl}${buildQuery(pageParams)}`, {}, true);
+		}
+		const batchResponses = batchRequest.execute();
+		
+		batchResponses.forEach(batchResponse => {
+			if (batchResponse.isOk && batchResponse.code === 200) {
+				const batchResponseBody = JSON.parse(batchResponse.body);
+				if (batchResponseBody.data) {
+					batchResponseBody.data.forEach(subscription => {
+						if (subscription.url) subscriptionUrls.push(subscription.url);
+					});
+				}
+			}
+		});
+	} else {
+		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
+			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
+			const pageResponse = http.GET(`${endpointUrl}${buildQuery(pageParams)}`, {}, true);
+			if (pageResponse.code === 200) {
+				const pageResponseBody = JSON.parse(pageResponse.body);
+				if (pageResponseBody.data) {
+					pageResponseBody.data.forEach(subscription => {
+						if (subscription.url) subscriptionUrls.push(subscription.url);
+					});
+				}
+			}
+		}
+	}
+	
+	return subscriptionUrls;
+};
+
 source.getChannelCapabilities = () => {
 	return {
 		types: [Type.Feed.Mixed, Type.Feed.Streams, Type.Feed.Videos, Type.Feed.Playlists],
