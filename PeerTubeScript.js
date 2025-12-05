@@ -649,6 +649,16 @@ source.getUserSubscriptions = function() {
 	return subscriptionUrls;
 };
 
+// source.getUserHistory = function() {
+
+// 	if (!bridge.isLoggedIn()) {
+// 		bridge.log("Failed to retrieve history page because not logged in.");
+// 		throw new ScriptException("Not logged in");
+// 	}
+
+// 	return getHistoryVideoPager("/api/v1/users/me/history/videos", {}, 0);
+// };
+
 source.getChannelCapabilities = () => {
 	return {
 		types: [Type.Feed.Mixed, Type.Feed.Streams, Type.Feed.Videos, Type.Feed.Playlists],
@@ -1303,6 +1313,16 @@ class PeerTubePlaylistPager extends PlaylistPager {
 	}
 }
 
+class PeerTubeHistoryVideoPager extends VideoPager {
+	constructor(results, hasMore, path, params, page) {
+		super(results, hasMore, { path, params, page });
+	}
+
+	nextPage() {
+		return getHistoryVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
+	}
+}
+
 /**
  * Build a query
  * @param {{[key: string]: any}} params Query params
@@ -1570,6 +1590,73 @@ function getPlaylistPager(path, params, page, sourceHost = plugin.config.constan
 	});
 	
 	return new PeerTubePlaylistPager(playlistResults, hasMore, path, params, page, sourceHost, isSearch);
+}
+
+function getHistoryVideoPager(path, params, page) {
+	const count = 100;
+	const start = (page ?? 0) * count;
+	params = { ...params, start, count };
+
+	const url = `${plugin.config.constants.baseUrl}${path}`;
+	const urlWithParams = `${url}${buildQuery(params)}`;
+
+	const res = http.GET(urlWithParams, {}, true);
+
+	if (res.code != 200) {
+		log("Failed to get user history", res);
+		return new VideoPager([], false);
+	}
+
+	const obj = JSON.parse(res.body);
+
+	const results = obj.data.map(video => {
+		const sourceHost = plugin.config.constants.baseUrl;
+		
+		const baseUrl = [
+			video?.url,
+			video?.account?.url,
+			video?.channel?.url
+		].filter(Boolean).map(getBaseUrl).find(Boolean) || sourceHost;
+
+		const contentUrl = addContentUrlHint(video.url || `${baseUrl}/videos/watch/${video.uuid}`);
+		const channelUrl = addChannelUrlHint(video.channel.url);
+		
+		const nsfwPolicy = getNSFWPolicy();
+		const isNSFW = video.nsfw === true;
+		let thumbnails;
+
+		if (isNSFW && nsfwPolicy === "blur") {
+			thumbnails = new Thumbnails([]);
+		} else {
+			thumbnails = new Thumbnails([new Thumbnail(`${baseUrl}${video.thumbnailPath}`, 0)]);
+		}
+
+		const platformVideo = new PlatformVideo({
+			id: new PlatformID(PLATFORM, video.uuid, config.id),
+			name: video.name ?? "",
+			thumbnails: thumbnails,
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, video.channel.name, config.id),
+				video.channel.displayName,
+				channelUrl,
+				getAvatarUrl(video, baseUrl)
+			),
+			datetime: Math.round((new Date(video.publishedAt)).getTime() / 1000),
+			duration: video.duration,
+			viewCount: video.views,
+			url: contentUrl,
+			isLive: video.isLive
+		});
+		
+		
+		if (video.userHistory && video.userHistory.currentTime) {
+			platformVideo.playbackTime = video.userHistory.currentTime;
+		}
+
+		return platformVideo;
+	});
+
+	return new PeerTubeHistoryVideoPager(results, obj.total > (start + count), path, params, page);
 }
 
 function extractVersionParts(version) {
