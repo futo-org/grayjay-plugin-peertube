@@ -22,6 +22,10 @@ const URLS = {
 	PEERTUBE_LOGO: "https://plugins.grayjay.app/PeerTube/peertube.png"
 }
 
+// Query parameter to flag private/unlisted playlists that require authentication
+// This is added by getUserPlaylists and checked by getPlaylist
+const PRIVATE_PLAYLIST_QUERY_PARAM = '&requiresAuth=1';
+
 // instances are populated during deploy appended to the end of this javascript file
 // this update process is done at update-instances.sh
 let INDEX_INSTANCES = {
@@ -672,18 +676,26 @@ source.getUserPlaylists = function() {
 	const endpointUrl = `${plugin.config.constants.baseUrl}/api/v1/accounts/${username}/video-playlists`;
 	const baseParams = { sort: '-updatedAt' };
 	
+	// Helper to build playlist URL with auth flag for private/unlisted playlists
+	const buildPlaylistUrl = (p) => {
+		let url = p.uuid 
+			? `${plugin.config.constants.baseUrl}/w/p/${p.uuid}` 
+			: p.url;
+		if (url && p.privacy?.id !== 1) {
+			url += PRIVATE_PLAYLIST_QUERY_PARAM;
+		}
+		return url;
+	};
+
 	try {
 		var initialResponseBody = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: 0, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
 	} catch (e) {
 		return [];
 	}
 	if (initialResponseBody.data) {
-		initialResponseBody.data.forEach(p => { 
-			if (p.uuid) {
-				playlistUrls.push(`${plugin.config.constants.baseUrl}/w/p/${p.uuid}`);
-			} else if (p.url) {
-				playlistUrls.push(p.url);
-			}
+		initialResponseBody.data.forEach(p => {
+			const url = buildPlaylistUrl(p);
+			if (url) playlistUrls.push(url);
 		});
 	}
 
@@ -701,12 +713,9 @@ source.getUserPlaylists = function() {
 			if (r.isOk && r.code === 200) {
 				const data = JSON.parse(r.body).data;
 				if (data) {
-					data.forEach(p => { 
-						if (p.uuid) {
-							playlistUrls.push(`${plugin.config.constants.baseUrl}/w/p/${p.uuid}`);
-						} else if (p.url) {
-							playlistUrls.push(p.url);
-						}
+					data.forEach(p => {
+						const url = buildPlaylistUrl(p);
+						if (url) playlistUrls.push(url);
 					});
 				}
 			}
@@ -716,12 +725,9 @@ source.getUserPlaylists = function() {
 			try {
 				const data = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true }).data;
 				if (data) {
-					data.forEach(p => { 
-						if (p.uuid) {
-							playlistUrls.push(`${plugin.config.constants.baseUrl}/w/p/${p.uuid}`);
-						} else if (p.url) {
-							playlistUrls.push(p.url);
-						}
+					data.forEach(p => {
+						const url = buildPlaylistUrl(p);
+						if (url) playlistUrls.push(url);
 					});
 				}
 			} catch (e) {
@@ -764,7 +770,7 @@ source.getChannelContents = function (url, type, order, filters) {
 			params.isLive = false;
 		}
 
-		return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl);
+		return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl, false, null, true);
 	}
 };
 
@@ -783,7 +789,7 @@ source.searchChannelContents = function (channelUrl, query, type, order, filters
 	};
 
 	// Use the channel-specific videos endpoint with search parameter
-	return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl);
+	return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl, false, null, true);
 };
 
 source.getChannelPlaylists = function (url, order, filters) {
@@ -871,16 +877,25 @@ source.getPlaylist = function(url) {
 		// Continue with regular playlist handling
 	}
 
-	const playlistId = extractPlaylistId(url);
+	// Check if this is a private playlist that requires authentication
+	// Private playlists are flagged with PRIVATE_PLAYLIST_QUERY_PARAM by getUserPlaylists
+	// We also verify that the URL belongs to the base instance to prevent bad actors from triggering auth on external domains
+	const requiresAuth = url.includes(PRIVATE_PLAYLIST_QUERY_PARAM) && isBaseInstanceUrl(url);
+	
+	// Remove the auth flag from URL before processing
+	const cleanUrl = url.replace(PRIVATE_PLAYLIST_QUERY_PARAM, '');
+
+	const playlistId = extractPlaylistId(cleanUrl);
 	if (!playlistId) {
 		return null;
 	}
 
-	const sourceBaseUrl = getBaseUrl(url);
+	const sourceBaseUrl = getBaseUrl(cleanUrl);
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-playlists/${playlistId}`;
 	
 	try {
-		var playlist = httpGET({ url: urlWithParams, useAuthenticated: true, parseResponse: true });
+		// Only use auth for private playlists from the base instance
+		var playlist = httpGET({ url: urlWithParams, useAuthenticated: requiresAuth, parseResponse: true });
 	} catch (e) {
 		log("Failed to get playlist", e);
 		return null;
@@ -916,7 +931,7 @@ source.getPlaylist = function(url) {
 				
 				return playlistItem.video;
 			},
-			true
+			requiresAuth
 		)
 	});
 };
