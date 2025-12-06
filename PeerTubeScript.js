@@ -1402,10 +1402,28 @@ function isValidUrl(str) {
 }
 
 /**
+ * Checks if a URL belongs to the configured base instance
+ * @param {string} url - The URL to check
+ * @returns {boolean} True if the URL is for the base instance
+ */
+function isBaseInstanceUrl(url) {
+	if (!url || !plugin?.config?.constants?.baseUrl) {
+		return false;
+	}
+	try {
+		const urlHost = new URL(url).host.toLowerCase();
+		const baseHost = new URL(plugin.config.constants.baseUrl).host.toLowerCase();
+		return urlHost === baseHost;
+	} catch (e) {
+		return false;
+	}
+}
+
+/**
  * Gets the requested url and returns the response body either as a string or as a parsed json object
  * @param {Object|string} optionsOrUrl - The options object or URL string
  * @param {string} optionsOrUrl.url - The URL to call (when using object)
- * @param {boolean} [optionsOrUrl.useAuthenticated=false] - If true, will use authenticated headers
+ * @param {boolean} [optionsOrUrl.useAuthenticated=false] - If true, will use authenticated headers (only for base instance URLs)
  * @param {boolean} [optionsOrUrl.parseResponse=false] - If true, will parse the response as json and check for errors
  * @param {number} [optionsOrUrl.retries=5] - Number of retry attempts
  * @param {Object} [optionsOrUrl.headers=null] - Custom headers to use for the request
@@ -1438,6 +1456,9 @@ function httpGET(optionsOrUrl) {
 		throw new ScriptException("URL is required");
 	}
 
+	// Only use authentication for requests to the base instance
+	const shouldAuthenticate = useAuthenticated && isBaseInstanceUrl(url);
+
 	let lastError;
 	let attempts = retries + 1; // +1 for the initial attempt
 
@@ -1446,7 +1467,7 @@ function httpGET(optionsOrUrl) {
 			const resp = http.GET(
 				url,
 				headers,
-				useAuthenticated
+				shouldAuthenticate
 			);
 
 			if (!resp.isOk) {
