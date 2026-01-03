@@ -22,6 +22,10 @@ const URLS = {
 	PEERTUBE_LOGO: "https://plugins.grayjay.app/PeerTube/peertube.png"
 }
 
+// Query parameter to flag private/unlisted playlists that require authentication
+// This is added by getUserPlaylists and checked by getPlaylist
+const PRIVATE_PLAYLIST_QUERY_PARAM = '&requiresAuth=1';
+
 // instances are populated during deploy appended to the end of this javascript file
 // this update process is done at update-instances.sh
 let INDEX_INSTANCES = {
@@ -539,34 +543,202 @@ source.getChannel = function (url) {
 	const sourceBaseUrl = getBaseUrl(url);
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-channels/${handle}`;
 
-	const res = http.GET(urlWithParams, {});
+	try {
+		const obj = httpGET({ url: urlWithParams, parseResponse: true });
 
-	if (res.code != 200) {
-		log("Failed to get channel", res);
+		// Add URL hint using utility function
+		const channelUrl = obj.url || `${sourceBaseUrl}/video-channels/${handle}`;
+		const channelUrlWithHint = addChannelUrlHint(channelUrl);
+		
+		return new PlatformChannel({
+			id: new PlatformID(PLATFORM, obj.name, config.id),
+			name: obj.displayName || obj.name || handle,
+			thumbnail: getAvatarUrl(obj, sourceBaseUrl),
+			banner: getBannerUrl(obj, sourceBaseUrl),
+			subscribers: obj.followersCount || 0,
+			description: obj.description ?? "",
+			url: channelUrlWithHint,
+			links: {},
+			urlAlternatives: [
+				channelUrl,
+				channelUrlWithHint
+			]
+		});
+	} catch (e) {
+		log("Failed to get channel", e);
 		return null;
 	}
 
-	const obj = JSON.parse(res.body);
-
-	// Add URL hint using utility function
-	const channelUrl = obj.url || `${sourceBaseUrl}/video-channels/${handle}`;
-	const channelUrlWithHint = addChannelUrlHint(channelUrl);
-	
-	return new PlatformChannel({
-		id: new PlatformID(PLATFORM, obj.name, config.id),
-		name: obj.displayName || obj.name || handle,
-		thumbnail: getAvatarUrl(obj, sourceBaseUrl),
-		banner: getBannerUrl(obj, sourceBaseUrl),
-		subscribers: obj.followersCount || 0,
-		description: obj.description ?? "",
-		url: channelUrlWithHint,
-		links: {},
-		urlAlternatives: [
-			channelUrl,
-			channelUrlWithHint
-		]
-	});
 };
+
+/**
+ * Retrieves the list of subscriptions for the authenticated user.
+ * 
+ * This function fetches all subscriptions from the PeerTube instance.
+ * It handles pagination automatically, using batch requests if multiple pages are needed
+ * 
+ * @returns {string[]} An array of subscription URLs.
+ */
+source.getUserSubscriptions = function() {
+
+	if (!bridge.isLoggedIn()) {
+		bridge.log("Failed to retrieve subscriptions page because not logged in.");
+		throw new ScriptException("Not logged in");
+	}
+
+	const itemsPerPage = 100;
+	let subscriptionUrls = [];
+	
+	const initialParams = { start: 0, count: itemsPerPage };
+	const endpointUrl = `${plugin.config.constants.baseUrl}/api/v1/users/me/subscriptions`;
+	const initialRequestUrl = `${endpointUrl}${buildQuery(initialParams)}`;
+	
+	try {
+		var initialResponseBody = httpGET({ url: initialRequestUrl, useAuthenticated: true, parseResponse: true });
+	} catch (e) {
+		log("Failed to get user subscriptions", e);
+		return [];
+	}
+	
+	if (initialResponseBody.data && initialResponseBody.data.length > 0) {
+		initialResponseBody.data.forEach(subscription => {
+			if (subscription.url) subscriptionUrls.push(subscription.url);
+		});
+	}
+
+	const totalSubscriptions = initialResponseBody.total;
+	if (subscriptionUrls.length >= totalSubscriptions) {
+		return subscriptionUrls;
+	}
+
+	const remainingSubscriptions = totalSubscriptions - subscriptionUrls.length;
+	const remainingPages = Math.ceil(remainingSubscriptions / itemsPerPage);
+
+	if (remainingPages > 1) {
+		const batchRequest = http.batch();
+		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
+			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
+			batchRequest.GET(`${endpointUrl}${buildQuery(pageParams)}`, {}, true);
+		}
+		const batchResponses = batchRequest.execute();
+		
+		batchResponses.forEach(batchResponse => {
+			if (batchResponse.isOk && batchResponse.code === 200) {
+				const batchResponseBody = JSON.parse(batchResponse.body);
+				if (batchResponseBody.data) {
+					batchResponseBody.data.forEach(subscription => {
+						if (subscription.url) subscriptionUrls.push(subscription.url);
+					});
+				}
+			}
+		});
+	} else {
+		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
+			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
+			try {
+				const pageResponseBody = httpGET({ url: `${endpointUrl}${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
+				if (pageResponseBody.data) {
+					pageResponseBody.data.forEach(subscription => {
+						if (subscription.url) subscriptionUrls.push(subscription.url);
+					});
+				}
+			} catch (e) {
+				// Continue to next page on error
+			}
+		}
+	}
+	
+	return subscriptionUrls;
+};
+
+// source.getUserHistory = function() {
+
+// 	if (!bridge.isLoggedIn()) {
+// 		bridge.log("Failed to retrieve history page because not logged in.");
+// 		throw new ScriptException("Not logged in");
+// 	}
+
+// 	return getHistoryVideoPager("/api/v1/users/me/history/videos", {}, 0);
+// };
+
+source.getUserPlaylists = function() {
+	try {
+		var meData = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/users/me`, useAuthenticated: true, parseResponse: true });
+	} catch (e) {
+		return [];
+	}
+	
+	const username = meData.account?.name;
+	if (!username) return [];
+
+	const itemsPerPage = 50;
+	let playlistUrls = [];
+	const endpointUrl = `${plugin.config.constants.baseUrl}/api/v1/accounts/${username}/video-playlists`;
+	const baseParams = { sort: '-updatedAt' };
+	
+	// Helper to build playlist URL with auth flag for private/unlisted playlists
+	const buildPlaylistUrl = (p) => {
+		let url = p.uuid 
+			? `${plugin.config.constants.baseUrl}/w/p/${p.uuid}` 
+			: p.url;
+		if (url && p.privacy?.id !== 1) {
+			url += PRIVATE_PLAYLIST_QUERY_PARAM;
+		}
+		return url;
+	};
+
+	try {
+		var initialResponseBody = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: 0, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
+	} catch (e) {
+		return [];
+	}
+	if (initialResponseBody.data) {
+		initialResponseBody.data.forEach(p => {
+			const url = buildPlaylistUrl(p);
+			if (url) playlistUrls.push(url);
+		});
+	}
+
+	const total = initialResponseBody.total;
+	if (playlistUrls.length >= total) return playlistUrls;
+
+	const remainingPages = Math.ceil((total - playlistUrls.length) / itemsPerPage);
+
+	if (remainingPages > 1) {
+		const batch = http.batch();
+		for (let i = 1; i <= remainingPages; i++) {
+			batch.GET(`${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, {}, true);
+		}
+		batch.execute().forEach(r => {
+			if (r.isOk && r.code === 200) {
+				const data = JSON.parse(r.body).data;
+				if (data) {
+					data.forEach(p => {
+						const url = buildPlaylistUrl(p);
+						if (url) playlistUrls.push(url);
+					});
+				}
+			}
+		});
+	} else {
+		for (let i = 1; i <= remainingPages; i++) {
+			try {
+				const data = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true }).data;
+				if (data) {
+					data.forEach(p => {
+						const url = buildPlaylistUrl(p);
+						if (url) playlistUrls.push(url);
+					});
+				}
+			} catch (e) {
+				// Continue to next page on error
+			}
+		}
+	}
+	
+	return playlistUrls;
+};
+
 source.getChannelCapabilities = () => {
 	return {
 		types: [Type.Feed.Mixed, Type.Feed.Streams, Type.Feed.Videos, Type.Feed.Playlists],
@@ -598,7 +770,7 @@ source.getChannelContents = function (url, type, order, filters) {
 			params.isLive = false;
 		}
 
-		return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl);
+		return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl, false, null, true);
 	}
 };
 
@@ -617,7 +789,7 @@ source.searchChannelContents = function (channelUrl, query, type, order, filters
 	};
 
 	// Use the channel-specific videos endpoint with search parameter
-	return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl);
+	return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl, false, null, true);
 };
 
 source.getChannelPlaylists = function (url, order, filters) {
@@ -705,22 +877,30 @@ source.getPlaylist = function(url) {
 		// Continue with regular playlist handling
 	}
 
-	const playlistId = extractPlaylistId(url);
+	// Check if this is a private playlist that requires authentication
+	// Private playlists are flagged with PRIVATE_PLAYLIST_QUERY_PARAM by getUserPlaylists
+	// We also verify that the URL belongs to the base instance to prevent bad actors from triggering auth on external domains
+	const requiresAuth = url.includes(PRIVATE_PLAYLIST_QUERY_PARAM) && isBaseInstanceUrl(url);
+	
+	// Remove the auth flag from URL before processing
+	const cleanUrl = url.replace(PRIVATE_PLAYLIST_QUERY_PARAM, '');
+
+	const playlistId = extractPlaylistId(cleanUrl);
 	if (!playlistId) {
 		return null;
 	}
 
-	const sourceBaseUrl = getBaseUrl(url);
+	const sourceBaseUrl = getBaseUrl(cleanUrl);
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-playlists/${playlistId}`;
 	
-	const res = http.GET(urlWithParams, {});
-	
-	if (res.code != 200) {
-		log("Failed to get playlist", res);
+	try {
+		// Only use auth for private playlists from the base instance
+		var playlist = httpGET({ url: urlWithParams, useAuthenticated: requiresAuth, parseResponse: true });
+	} catch (e) {
+		log("Failed to get playlist", e);
 		return null;
 	}
 	
-	const playlist = JSON.parse(res.body);
 	const thumbnailUrl = playlist.thumbnailPath ? 
 		`${sourceBaseUrl}${playlist.thumbnailPath}` : 
 		URLS.PEERTUBE_LOGO;
@@ -750,7 +930,8 @@ source.getPlaylist = function(url) {
 			(playlistItem) => {
 				
 				return playlistItem.video;
-			}
+			},
+			requiresAuth
 		)
 	});
 };
@@ -922,12 +1103,13 @@ source.getContentRecommendations = function (url, obj) {
 	let tagsOneOf = obj?.tags ?? [];
 
 	if (!obj && videoId) {
-		const res = http.GET(`${sourceHost}/api/v1/videos/${videoId}`, {});
-		if (res.isOk) {
-			const obj = JSON.parse(res.body);
-			if (obj) {
-				tagsOneOf = obj?.tags ?? []
+		try {
+			const videoData = httpGET({ url: `${sourceHost}/api/v1/videos/${videoId}`, parseResponse: true });
+			if (videoData) {
+				tagsOneOf = videoData?.tags ?? []
 			}
+		} catch (e) {
+			// Continue with empty tags
 		}
 	}
 
@@ -985,14 +1167,7 @@ source.getSubComments = function (comment) {
 	const apiUrl = `${sourceBaseUrl}/api/v1/videos/${videoId}/comment-threads/${commentId}`;
 	
 	try {
-		const res = http.GET(apiUrl, {});
-		
-		if (res.code != 200) {
-			bridge.log("Failed to get sub-comments, status: " + res.code);
-			return new CommentPager([], false);
-		}
-		
-		const obj = JSON.parse(res.body);
+		const obj = httpGET({ url: apiUrl, parseResponse: true });
 		
 		// Extract replies from the comment thread response
 		const replies = obj.children || [];
@@ -1045,12 +1220,7 @@ source.getLiveChatWindow = function (url) {
     
     // Check if the video is live and has chat enabled
     try {
-        const videoResponse = http.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, {});
-        if (!videoResponse.isOk) {
-            return null;
-        }
-        
-        const videoData = JSON.parse(videoResponse.body);
+        const videoData = httpGET({ url: `${sourceBaseUrl}/api/v1/videos/${videoId}`, parseResponse: true });
         
         // Only proceed if the video is live
         if (!videoData.isLive) {
@@ -1182,12 +1352,12 @@ class PeerTubePlaybackTracker extends PlaybackTracker {
 }
 
 class PeerTubeVideoPager extends VideoPager {
-	constructor(results, hasMore, path, params, page, sourceHost, isSearch, cbMap) {
-		super(results, hasMore, { path, params, page, sourceHost, isSearch, cbMap });
+	constructor(results, hasMore, path, params, page, sourceHost, isSearch, cbMap, useAuth) {
+		super(results, hasMore, { path, params, page, sourceHost, isSearch, cbMap, useAuth });
 	}
 
 	nextPage() {
-		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch, this.context.cbMap);
+		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch, this.context.cbMap, this.context.useAuth);
 	}
 }
 
@@ -1218,6 +1388,135 @@ class PeerTubePlaylistPager extends PlaylistPager {
 
 	nextPage() {
 		return getPlaylistPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch);
+	}
+}
+
+class PeerTubeHistoryVideoPager extends VideoPager {
+	constructor(results, hasMore, path, params, page) {
+		super(results, hasMore, { path, params, page });
+	}
+
+	nextPage() {
+		return getHistoryVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
+	}
+}
+
+/**
+ * Validates if a string is a valid URL
+ * @param {string} str - The string to validate
+ * @returns {boolean} True if the string is a valid URL, false otherwise
+ */
+function isValidUrl(str) {
+	if (typeof str !== 'string') {
+		return false;
+	}
+
+	// Basic URL validation - checks for http:// or https:// and a domain
+	const urlPattern = /^https?:\/\/.+/i;
+	return urlPattern.test(str);
+}
+
+/**
+ * Checks if a URL belongs to the configured base instance
+ * @param {string} url - The URL to check
+ * @returns {boolean} True if the URL is for the base instance
+ */
+function isBaseInstanceUrl(url) {
+	if (!url || !plugin?.config?.constants?.baseUrl) {
+		return false;
+	}
+	try {
+		const urlHost = new URL(url).host.toLowerCase();
+		const baseHost = new URL(plugin.config.constants.baseUrl).host.toLowerCase();
+		return urlHost === baseHost;
+	} catch (e) {
+		return false;
+	}
+}
+
+/**
+ * Gets the requested url and returns the response body either as a string or as a parsed json object
+ * @param {Object|string} optionsOrUrl - The options object or URL string
+ * @param {string} optionsOrUrl.url - The URL to call (when using object)
+ * @param {boolean} [optionsOrUrl.useAuthenticated=false] - If true, will use authenticated headers (only for base instance URLs)
+ * @param {boolean} [optionsOrUrl.parseResponse=false] - If true, will parse the response as json and check for errors
+ * @param {number} [optionsOrUrl.retries=5] - Number of retry attempts
+ * @param {Object} [optionsOrUrl.headers=null] - Custom headers to use for the request
+ * @returns {Object} the response object or the parsed json object
+ * @throws {ScriptException}
+ */
+function httpGET(optionsOrUrl) {
+	// Check if parameter is a string URL
+	let options;
+	if (typeof optionsOrUrl === 'string') {
+		if (!isValidUrl(optionsOrUrl)) {
+			throw new ScriptException("Invalid URL provided: " + optionsOrUrl);
+		}
+		options = { url: optionsOrUrl };
+	} else if (typeof optionsOrUrl === 'object' && optionsOrUrl !== null) {
+		options = optionsOrUrl;
+	} else {
+		throw new ScriptException("httpGET requires either a URL string or options object");
+	}
+
+	const {
+		url,
+		useAuthenticated = false,
+		parseResponse = false,
+		retries = 5,
+		headers = {}
+	} = options;
+
+	if (!url) {
+		throw new ScriptException("URL is required");
+	}
+
+	// Only use authentication for requests to the base instance
+	const shouldAuthenticate = useAuthenticated && isBaseInstanceUrl(url);
+
+	let lastError;
+	let attempts = retries + 1; // +1 for the initial attempt
+
+	while (attempts > 0) {
+		try {
+			const resp = http.GET(
+				url,
+				headers,
+				shouldAuthenticate
+			);
+
+			if (!resp.isOk) {
+				throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+			}
+
+			if (parseResponse) {
+				const json = JSON.parse(resp.body);
+				if (json.errors) {
+					throw new ScriptException(json.errors[0].message);
+				}
+				return json;
+			}
+
+			return resp;
+		} catch (error) {
+			lastError = error;
+
+			attempts--;
+
+			if (attempts > 0) {
+				// Small delay before retry
+				if (typeof bridge !== 'undefined' && bridge.sleep) {
+					bridge.sleep(100);
+				}
+			}
+
+			if (attempts === 0) {
+				// All retry attempts failed
+				log(`Request failed after ${retries + 1} attempts: ${url}`);
+				log(lastError);
+				throw lastError;
+			}
+		}
 	}
 }
 
@@ -1268,14 +1567,12 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 	const url = `${sourceHost}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
 
-	const res = http.GET(urlWithParams, {});
-
-	if (res.code != 200) {
-		log("Failed to get channels", res);
+	try {
+		var obj = httpGET({ url: urlWithParams, parseResponse: true });
+	} catch (e) {
+		log("Failed to get channels", e);
 		return new ChannelPager([], false);
 	}
-
-	const obj = JSON.parse(res.body);
 
 	return new PeerTubeChannelPager(obj.data.map(v => {
 
@@ -1292,7 +1589,7 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 	}), obj.total > (start + count), path, params, page);
 }
 
-function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false, cbMap) {
+function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false, cbMap, useAuth = false) {
 
 	const count = 20;
 	const start = (page ?? 0) * count;
@@ -1313,15 +1610,12 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	const urlWithParams = `${url}${buildQuery(params)}`;
 
-	const res = http.GET(urlWithParams, {});
-
-
-	if (res.code != 200) {
-		log("Failed to get videos", res);
+	try {
+		var obj = httpGET({ url: urlWithParams, useAuthenticated: useAuth, parseResponse: true });
+	} catch (e) {
+		log("Failed to get videos", e);
 		return new VideoPager([], false);
 	}
-
-	const obj = JSON.parse(res.body);
 
 	const hasMore = obj.total > (start + count);
 
@@ -1381,7 +1675,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	});
 
-	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap);
+	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap, useAuth);
 }
 
 function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
@@ -1398,14 +1692,12 @@ function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.co
 	// Build video URL internally
 	const videoUrl = addContentUrlHint(`${sourceBaseUrl}/videos/watch/${videoId}`);
 	
-	const res = http.GET(urlWithParams, {});
-
-	if (res.code != 200) {
-		log("Failed to get comments", res);
+	try {
+		var obj = httpGET({ url: urlWithParams, parseResponse: true });
+	} catch (e) {
+		log("Failed to get comments", e);
 		return new CommentPager([], false);
 	}
-
-	const obj = JSON.parse(res.body);
 
 	return new PeerTubeCommentPager(obj.data
 		.filter(v => !v.isDeleted || (v.isDeleted && v.totalReplies > 0)) // filter out deleted comments without replies. TODO: handle soft deleted comments with replies
@@ -1451,14 +1743,13 @@ function getPlaylistPager(path, params, page, sourceHost = plugin.config.constan
 	const url = `${sourceHost}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
 	
-	const res = http.GET(urlWithParams, {});
-	
-	if (res.code != 200) {
-		log("Failed to get playlists", res);
+	try {
+		var obj = httpGET({ url: urlWithParams, parseResponse: true });
+	} catch (e) {
+		log("Failed to get playlists", e);
 		return new PlaylistPager([], false);
 	}
 	
-	const obj = JSON.parse(res.body);
 	const hasMore = obj.total > (start + count);
 	
 	const playlistResults = obj.data.map(playlist => {
@@ -1488,6 +1779,71 @@ function getPlaylistPager(path, params, page, sourceHost = plugin.config.constan
 	});
 	
 	return new PeerTubePlaylistPager(playlistResults, hasMore, path, params, page, sourceHost, isSearch);
+}
+
+function getHistoryVideoPager(path, params, page) {
+	const count = 100;
+	const start = (page ?? 0) * count;
+	params = { ...params, start, count };
+
+	const url = `${plugin.config.constants.baseUrl}${path}`;
+	const urlWithParams = `${url}${buildQuery(params)}`;
+
+	try {
+		var obj = httpGET({ url: urlWithParams, useAuthenticated: true, parseResponse: true });
+	} catch (e) {
+		log("Failed to get user history", e);
+		return new VideoPager([], false);
+	}
+
+	const results = obj.data.map(video => {
+		const sourceHost = plugin.config.constants.baseUrl;
+		
+		const baseUrl = [
+			video?.url,
+			video?.account?.url,
+			video?.channel?.url
+		].filter(Boolean).map(getBaseUrl).find(Boolean) || sourceHost;
+
+		const contentUrl = addContentUrlHint(video.url || `${baseUrl}/videos/watch/${video.uuid}`);
+		const channelUrl = addChannelUrlHint(video.channel.url);
+		
+		const nsfwPolicy = getNSFWPolicy();
+		const isNSFW = video.nsfw === true;
+		let thumbnails;
+
+		if (isNSFW && nsfwPolicy === "blur") {
+			thumbnails = new Thumbnails([]);
+		} else {
+			thumbnails = new Thumbnails([new Thumbnail(`${baseUrl}${video.thumbnailPath}`, 0)]);
+		}
+
+		const platformVideo = new PlatformVideo({
+			id: new PlatformID(PLATFORM, video.uuid, config.id),
+			name: video.name ?? "",
+			thumbnails: thumbnails,
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, video.channel.name, config.id),
+				video.channel.displayName,
+				channelUrl,
+				getAvatarUrl(video, baseUrl)
+			),
+			datetime: Math.round((new Date(video.publishedAt)).getTime() / 1000),
+			duration: video.duration,
+			viewCount: video.views,
+			url: contentUrl,
+			isLive: video.isLive
+		});
+		
+		
+		if (video.userHistory && video.userHistory.currentTime) {
+			platformVideo.playbackTime = video.userHistory.currentTime;
+		}
+
+		return platformVideo;
+	});
+
+	return new PeerTubeHistoryVideoPager(results, obj.total > (start + count), path, params, page);
 }
 
 function extractVersionParts(version) {

@@ -20,6 +20,14 @@
 	"constants": {
 		"baseUrl": "https://peertube.futo.org"
 	},
+	"authentication": {
+		"loginUrl": "https://peertube.futo.org/login",
+		"completionUrl": "https://peertube.futo.org/api/v1/users/me?*",
+		"headersToFind": [
+			"Authorization"
+		],
+		"userAgent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36"
+	},
 	"settings": [
 		{
 			"variable": "homeHeader",
@@ -388,6 +396,9 @@
 	],
 	"changelog": {
 		"25": [
+			"Add instance authentication;",
+			"Import user subscriptions;",
+			"Import user playlists;",
 			"Add home feed source setting to choose between 'Current instance' and 'Sepia Search' for home feed videos;",
 			"Add home feed sorting settings to customize how videos are displayed on the home page (Best, Newest, Oldest, Most Views, Most Likes, Trending, Hot);",
 			"Add plugin settings to filter home feed content by multiple categories and languages;",
