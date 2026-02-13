@@ -1094,7 +1094,7 @@ source.getContentDetails = function (url) {
 		),
 		datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
 		duration: obj.duration,
-		viewCount: obj.views,
+		viewCount: obj.isLive ? (obj.viewers ?? obj.views) : obj.views,
 		url: contentUrl,
 		isLive: obj.isLive,
 		description: obj.description,
@@ -1712,7 +1712,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 			),
 			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
 			duration: v.duration,
-			viewCount: v.views,
+			viewCount: v.isLive ? (v.viewers ?? v.views) : v.views,
 			url: contentUrl,
 			isLive: v.isLive
 		});
@@ -1874,7 +1874,7 @@ function getHistoryVideoPager(path, params, page) {
 			),
 			datetime: Math.round((new Date(video.publishedAt)).getTime() / 1000),
 			duration: video.duration,
-			viewCount: video.views,
+			viewCount: video.isLive ? (video.viewers ?? video.views) : video.views,
 			url: contentUrl,
 			isLive: video.isLive
 		});

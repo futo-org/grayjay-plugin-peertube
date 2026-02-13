@@ -410,7 +410,8 @@
 			"Improvement: Add search filters for videos (Category, Language, License, Duration, NSFW, Features, Search Scope);",
 			"Improvement: Add search for contents within a channel;",
 			"Improvement: Add banner support for channels on PeerTube v6.0.0+ instances;",
-			"Improvement: Update known instances from https://instances.joinpeertube.org, https://api.fediverse.observer/, and https://api.fedidb.org/"
+			"Improvement: Update known instances from https://instances.joinpeertube.org, https://api.fediverse.observer/, and https://api.fedidb.org/",
+			"Fix: Viewer count for livestreams;"
 		],
 		"24": [
 			"Fix existing subscription not being recognized as subscribed in video details;",
