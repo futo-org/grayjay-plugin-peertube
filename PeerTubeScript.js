@@ -1019,6 +1019,27 @@ function processSubtitlesData(subtitlesResponse) {
 	}
 }
 
+function extractChapters(chaptersData, videoDuration) {
+	if (!chaptersData || !chaptersData.isOk) return [];
+
+	try {
+		const data = JSON.parse(chaptersData.body);
+		if (!data?.chapters?.length) return [];
+
+		return data.chapters.map(function (chapter, i) {
+			const nextChapter = data.chapters[i + 1];
+			return {
+				name: chapter.title,
+				timeStart: chapter.timecode,
+				timeEnd: nextChapter ? nextChapter.timecode : (videoDuration || 999999),
+				type: Type.Chapter.NORMAL
+			};
+		});
+	} catch (e) {
+		return [];
+	}
+}
+
 source.getContentDetails = function (url) {
 	const videoId = extractVideoId(url);
 	if (!videoId) {
@@ -1028,9 +1049,10 @@ source.getContentDetails = function (url) {
 	const sourceBaseUrl = getBaseUrl(url);
 	
 	// Create a batch request for both video details and captions
-	const [videoDetails, captionsData] = http.batch()
+	const [videoDetails, captionsData, chaptersData] = http.batch()
 		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, {})
 		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`, {})
+		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`, {})
 		.execute();
 	
 	if (!videoDetails.isOk) {
@@ -1086,9 +1108,13 @@ source.getContentDetails = function (url) {
 
 	if (IS_TESTING) {
 		source.getContentRecommendations(url, obj);
+		source.getContentChapters(url, chaptersData, obj.duration);
 	} else {
 		result.getContentRecommendations = function () {
 			return source.getContentRecommendations(url, obj);
+		};
+		result.getContentChapters = function () {
+			return source.getContentChapters(url, chaptersData, obj.duration);
 		};
 	}
 
@@ -1124,6 +1150,24 @@ source.getContentRecommendations = function (url, obj) {
 
 	pager.results = pager.results.filter(v => v.id.value != videoId);
 	return pager;
+}
+
+source.getContentChapters = function (url, chaptersData, videoDuration) {
+	if (chaptersData) {
+		return extractChapters(chaptersData, videoDuration);
+	}
+
+	const videoId = extractVideoId(url);
+	if (!videoId) return [];
+
+	const sourceBaseUrl = getBaseUrl(url);
+	try {
+		const resp = httpGET(`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`);
+		const obj = httpGET({ url: `${sourceBaseUrl}/api/v1/videos/${videoId}`, parseResponse: true });
+		return extractChapters(resp, obj?.duration);
+	} catch (e) {
+		return [];
+	}
 }
 
 source.getComments = function (url) {
