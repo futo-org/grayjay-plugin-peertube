@@ -28,6 +28,15 @@
 		],
 		"userAgent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36"
 	},
+	"authenticationDesktop": {
+		"loginUrl": "https://peertube.futo.org/login",
+		"completionUrl": "https://peertube.futo.org/api/v1/users/me?*",
+		"headersToFind": [
+			"Authorization"
+		],
+		"userAgent": null,
+		"useMobileEmulation": false
+	},
 	"settings": [
 		{
 			"variable": "homeHeader",
