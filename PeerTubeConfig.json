@@ -37,6 +37,21 @@
 		"userAgent": null,
 		"useMobileEmulation": false
 	},
+	"captcha": {
+		"userAgent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36",
+		"captchaUrl": null,
+		"cookiesToFind": [
+			"cf_clearance"
+		]
+	},
+	"captchaDesktop": {
+		"captchaUrl": null,
+		"cookiesToFind": [
+			"cf_clearance"
+		],
+		"userAgent": null,
+		"useMobileEmulation": false
+	},
 	"settings": [
 		{
 			"variable": "homeHeader",
@@ -401,6 +416,19 @@
 			"description": "Report viewing activity to PeerTube instances. After a while, the instance will use this information to increase the video's viewer counter.",
 			"type": "Boolean",
 			"default": "true"
+		},
+		{
+			"variable": "ExperimentalHeader",
+			"name": "Experimental",
+			"description": "Features that are still being tested and may not work as expected",
+			"type": "Header"
+		},
+		{
+			"variable": "enableCloudflareCaptcha",
+			"name": "Cloudflare Captcha Support",
+			"description": "When enabled, instances protected by Cloudflare will prompt you to solve a captcha instead of failing silently. This allows access to PeerTube instances behind Cloudflare bot protection.",
+			"type": "Boolean",
+			"default": "false"
 		}
 	],
 	"changelog": {
@@ -409,6 +437,7 @@
 			"Improvement: Import user subscriptions;",
 			"Improvement: Import user playlists;",
 			"Improvement: Content chapters",
+			"Improvement: initial Cloudflare captcha support (experimental disabled  by default);",
 			"Improvement: Add home feed source setting to choose between 'Current instance' and 'Sepia Search' for home feed videos;",
 			"Improvement: Add home feed sorting settings to customize how videos are displayed on the home page (Best, Newest, Oldest, Most Views, Most Likes, Trending, Hot);",
 			"Improvement: Add plugin settings to filter home feed content by multiple categories and languages;",
@@ -418,7 +447,7 @@
 			"Improvement: Add support for live chat window on PeerTube videos (Peertube plugin);",
 			"Improvement: Add search filters for videos (Category, Language, License, Duration, NSFW, Features, Search Scope);",
 			"Improvement: Add search for contents within a channel;",
-			"Improvement: Add banner support for channels on PeerTube v6.0.0+ instances;",
+			"Improvement: Add channel banner image support for channels on PeerTube v6.0.0+ instances;",
 			"Improvement: Update known instances from https://instances.joinpeertube.org, https://api.fediverse.observer/, and https://api.fedidb.org/",
 			"Fix: Viewer count for livestreams;"
 		],

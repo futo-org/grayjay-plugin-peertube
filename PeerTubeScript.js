@@ -1,4 +1,5 @@
 const PLATFORM = "PeerTube";
+const getUserAgent = () => bridge.authUserAgent ?? bridge.captchaUserAgent ?? 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36';
 
 let config = {};
 let _settings = {};
@@ -6,7 +7,10 @@ let _settings = {};
 let state = {
 	serverVersion: '',
 	isSearchEngineSepiaSearch: false,
-	isHomeContentSepiaSearch: false
+	isHomeContentSepiaSearch: false,
+	defaultHeaders: {
+		'User-Agent': getUserAgent()
+	}
 }
 
 const supportedResolutions = {
@@ -1056,6 +1060,7 @@ source.getContentDetails = function (url) {
 		.execute();
 	
 	if (!videoDetails.isOk) {
+		throwIfCaptcha(videoDetails);
 		log("Failed to get video detail", videoDetails);
 		return null;
 	}
@@ -1524,6 +1529,7 @@ function httpGET(optionsOrUrl) {
 	);
 
 	if (!resp.isOk) {
+		throwIfCaptcha(resp);
 		throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
 	}
 
@@ -2369,6 +2375,21 @@ function getNSFWPolicy() {
 	const policyIndex = parseInt(_settings.nsfwPolicy) || 0;
 	const policies = ["do_not_list", "blur", "display"];
 	return policies[policyIndex] || "do_not_list";
+}
+
+/**
+ * Throws a CaptchaRequiredException if the response contains a Cloudflare challenge.
+ * Only active when the Cloudflare captcha setting is enabled.
+ * @param {Object} resp - The HTTP response object
+ * @throws {CaptchaRequiredException} If the response body contains a captcha challenge
+ */
+function throwIfCaptcha(resp) {
+	if (!_settings.enableCloudflareCaptcha) return;
+	if (resp?.body && resp?.code == 403) {
+		if (/Just a moment\.\.\./i.test(resp.body)) {
+			throw new CaptchaRequiredException(resp.url, resp.body);
+		}
+	}
 }
 
 // Those instances were requested by users
