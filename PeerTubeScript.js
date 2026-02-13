@@ -1484,7 +1484,6 @@ function isBaseInstanceUrl(url) {
  * @param {string} optionsOrUrl.url - The URL to call (when using object)
  * @param {boolean} [optionsOrUrl.useAuthenticated=false] - If true, will use authenticated headers (only for base instance URLs)
  * @param {boolean} [optionsOrUrl.parseResponse=false] - If true, will parse the response as json and check for errors
- * @param {number} [optionsOrUrl.retries=5] - Number of retry attempts
  * @param {Object} [optionsOrUrl.headers=null] - Custom headers to use for the request
  * @returns {Object} the response object or the parsed json object
  * @throws {ScriptException}
@@ -1507,8 +1506,7 @@ function httpGET(optionsOrUrl) {
 		url,
 		useAuthenticated = false,
 		parseResponse = false,
-		retries = 5,
-		headers = {}
+		headers = null
 	} = options;
 
 	if (!url) {
@@ -1517,51 +1515,27 @@ function httpGET(optionsOrUrl) {
 
 	// Only use authentication for requests to the base instance
 	const shouldAuthenticate = useAuthenticated && isBaseInstanceUrl(url);
+	const localHeaders = headers ?? state.defaultHeaders;
 
-	let lastError;
-	let attempts = retries + 1; // +1 for the initial attempt
+	const resp = http.GET(
+		url,
+		localHeaders,
+		shouldAuthenticate
+	);
 
-	while (attempts > 0) {
-		try {
-			const resp = http.GET(
-				url,
-				headers,
-				shouldAuthenticate
-			);
-
-			if (!resp.isOk) {
-				throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
-			}
-
-			if (parseResponse) {
-				const json = JSON.parse(resp.body);
-				if (json.errors) {
-					throw new ScriptException(json.errors[0].message);
-				}
-				return json;
-			}
-
-			return resp;
-		} catch (error) {
-			lastError = error;
-
-			attempts--;
-
-			if (attempts > 0) {
-				// Small delay before retry
-				if (typeof bridge !== 'undefined' && bridge.sleep) {
-					bridge.sleep(100);
-				}
-			}
-
-			if (attempts === 0) {
-				// All retry attempts failed
-				log(`Request failed after ${retries + 1} attempts: ${url}`);
-				log(lastError);
-				throw lastError;
-			}
-		}
+	if (!resp.isOk) {
+		throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
 	}
+
+	if (parseResponse) {
+		const json = JSON.parse(resp.body);
+		if (json.errors) {
+			throw new ScriptException(json.errors[0].message);
+		}
+		return json;
+	}
+
+	return resp;
 }
 
 /**
