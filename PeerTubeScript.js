@@ -50,7 +50,8 @@ let _settings = {};
 
 let state = {
 	serverVersion: '',
-	isSearchEngineSepiaSearch: false,
+	searchCurrentInstance: true,
+	searchSepiaSearch: false,
 	homeSourceCurrentInstance: true,
 	homeSourceSepiaSearch: false,
 	defaultHeaders: {
@@ -62,7 +63,6 @@ let INDEX_INSTANCES = {
 	instances: []
 };
 
-let SEARCH_ENGINE_OPTIONS = [];
 
 
 if (IS_IMPERSONATION_AVAILABLE) {
@@ -82,7 +82,6 @@ source.enable = function (conf, settings, saveStateStr) {
 	config = conf ?? {};
 	_settings = settings ?? {};
 
-	SEARCH_ENGINE_OPTIONS = loadOptionsForSetting('searchEngineIndex');
 	let didSaveState = false;
 
 	if (IS_TESTING && !plugin?.config?.constants?.baseUrl) {
@@ -105,12 +104,16 @@ source.enable = function (conf, settings, saveStateStr) {
 	}
 
 	// Always recalculate these flags based on current settings
-	state.isSearchEngineSepiaSearch = SEARCH_ENGINE_OPTIONS[parseInt(_settings.searchEngineIndex)] == 'Sepia Search'
 	state.homeSourceCurrentInstance = _settings.homeSourceCurrentInstance !== false && _settings.homeSourceCurrentInstance !== "false";
 	state.homeSourceSepiaSearch = _settings.homeSourceSepiaSearch === true || _settings.homeSourceSepiaSearch === "true";
+	state.searchCurrentInstance = _settings.searchCurrentInstance !== false && _settings.searchCurrentInstance !== "false";
+	state.searchSepiaSearch = _settings.searchSepiaSearch === true || _settings.searchSepiaSearch === "true";
 	// Fallback: if neither is enabled, default to current instance
 	if (!state.homeSourceCurrentInstance && !state.homeSourceSepiaSearch) {
 		state.homeSourceCurrentInstance = true;
+	}
+	if (!state.searchCurrentInstance && !state.searchSepiaSearch) {
+		state.searchCurrentInstance = true;
 	}
 
 	if (!didSaveState) {
@@ -237,39 +240,51 @@ source.searchSuggestions = function (query) {
 	if (!query || query.trim().length < 2) return [];
 
 	try {
-		const sourceHost = state.isSearchEngineSepiaSearch
-			? 'https://sepiasearch.org'
-			: plugin.config.constants.baseUrl;
-
-		const params = {
+		const nsfwPolicy = getNSFWPolicy();
+		const baseParams = {
 			search: query.trim(),
 			start: 0,
 			count: 10
 		};
-
-		const nsfwPolicy = getNSFWPolicy();
 		if (nsfwPolicy !== 'display') {
-			params.nsfw = false;
+			baseParams.nsfw = false;
 		}
 
-		if (state.isSearchEngineSepiaSearch) {
-			params.resultType = 'videos';
+		// Fetch from enabled sources
+		const requests = [];
+		if (state.searchCurrentInstance) {
+			requests.push(`${plugin.config.constants.baseUrl}/api/v1/search/videos?${buildQuery(baseParams)}`);
+		}
+		if (state.searchSepiaSearch) {
+			requests.push(`https://sepiasearch.org/api/v1/search/videos?${buildQuery({ ...baseParams, resultType: 'videos' })}`);
+		}
+		if (requests.length === 0) {
+			requests.push(`${plugin.config.constants.baseUrl}/api/v1/search/videos?${buildQuery(baseParams)}`);
 		}
 
-		const url = `${sourceHost}/api/v1/search/videos?${buildQuery(params)}`;
-		const [resp] = httpGET(url);
-
-		if (!resp.isOk) return [];
-
-		const data = JSON.parse(resp.body);
-		if (!data?.data?.length) return [];
+		const allVideos = [];
+		if (requests.length === 1) {
+			const [resp] = httpGET(requests[0]);
+			const data = JSON.parse(resp.body);
+			if (data?.data) allVideos.push(...data.data);
+		} else {
+			const responses = httpGET(requests);
+			for (const resp of responses) {
+				if (!resp.isOk) continue;
+				try {
+					const data = JSON.parse(resp.body);
+					if (data?.data) allVideos.push(...data.data);
+				} catch (e) { /* ignore */ }
+			}
+		}
+		if (!allVideos.length) return [];
 
 		// Collect unique tags and video titles that match the query
 		const queryLower = query.trim().toLowerCase();
 		const seen = new Set();
 		const suggestions = [];
 
-		for (const video of data.data) {
+		for (const video of allVideos) {
 			// Add matching video titles
 			if (video.name && video.name.toLowerCase().includes(queryLower)) {
 				const key = video.name.toLowerCase();
@@ -529,61 +544,66 @@ source.search = function (query, type, order, filters) {
 				if (params.nsfw) sepiaParams.nsfw = params.nsfw;
 
 				return getVideoPager('/api/v1/search/videos', sepiaParams, 0, 'https://sepiasearch.org', true);
-			} else if (scopeFilter === "local" && !state.isSearchEngineSepiaSearch) {
+			} else if (scopeFilter === "local" && state.searchCurrentInstance) {
 				params.searchTarget = "local";
 			}
 			// "federated" means federated (default), so no parameter needed
 		}
 	}
 
-	let sourceHost = '';
-
-	if (state.isSearchEngineSepiaSearch) {
+	if (state.searchCurrentInstance && state.searchSepiaSearch) {
+		// Both sources: fetch in parallel, merge, deduplicate, sort
+		const localContext = {
+			path: '/api/v1/search/videos',
+			params: { ...params },
+			page: 0,
+			sourceHost: plugin.config.constants.baseUrl
+		};
+		const sepiaContext = {
+			path: '/api/v1/search/videos',
+			params: { ...params, resultType: 'videos', sort: '-createdAt' },
+			page: 0,
+			sourceHost: 'https://sepiasearch.org'
+		};
+		return getMixedVideoPager(localContext, sepiaContext);
+	} else if (state.searchSepiaSearch) {
 		params.resultType = 'videos';
-		params.sort = '-createdAt'
-		sourceHost = 'https://sepiasearch.org'
+		params.sort = '-createdAt';
+		return getVideoPager('/api/v1/search/videos', params, 0, 'https://sepiasearch.org', true);
 	} else {
-		sourceHost = plugin.config.constants.baseUrl;
+		return getVideoPager('/api/v1/search/videos', params, 0, plugin.config.constants.baseUrl, true);
 	}
-
-	const isSearch = true;
-
-	return getVideoPager('/api/v1/search/videos', params, 0, sourceHost, isSearch);
 };
 
 source.searchChannels = function (query) {
 
-	let sourceHost = '';
-
-	if (state.isSearchEngineSepiaSearch) {
-		sourceHost = 'https://sepiasearch.org'
-	} else {
-		sourceHost = plugin.config.constants.baseUrl;
-	}
-
-	const isSearch = true;
+	// Channel search doesn't support mixed pager (different result type),
+	// so use Sepia Search if enabled, otherwise current instance
+	const sourceHost = state.searchSepiaSearch
+		? 'https://sepiasearch.org'
+		: plugin.config.constants.baseUrl;
 
 	return getChannelPager('/api/v1/search/video-channels', {
 		search: query
-	}, 0, sourceHost, isSearch);
+	}, 0, sourceHost, true);
 };
 
 source.searchPlaylists = function (query) {
-	// Determine the search host based on settings
-	let sourceHost = state.isSearchEngineSepiaSearch 
-		? 'https://sepiasearch.org' 
+	// Playlist search doesn't support mixed pager (different result type),
+	// so use Sepia Search if enabled, otherwise current instance
+	const sourceHost = state.searchSepiaSearch
+		? 'https://sepiasearch.org'
 		: plugin.config.constants.baseUrl;
-	
+
 	const params = {
 		search: query
 	};
-	
-	// For Sepia Search, add specific parameters
-	if (state.isSearchEngineSepiaSearch) {
+
+	if (state.searchSepiaSearch) {
 		params.resultType = 'video-playlists';
 		params.sort = '-createdAt';
 	}
-	
+
 	return getPlaylistPager('/api/v1/search/video-playlists', params, 0, sourceHost, true);
 };
 
@@ -1515,14 +1535,16 @@ class PeerTubeChannelPager extends ChannelPager {
 	 * @param {string} path - API path
 	 * @param {Object} params - Query parameters
 	 * @param {number} page - Current page number
+	 * @param {string} sourceHost - Base URL of the PeerTube instance
+	 * @param {boolean} isSearch - Whether this is a search request
 	 */
-	constructor(results, hasMore, path, params, page) {
-		super(results, hasMore, { path, params, page });
+	constructor(results, hasMore, path, params, page, sourceHost, isSearch) {
+		super(results, hasMore, { path, params, page, sourceHost, isSearch });
 	}
 
 	/** @returns {PeerTubeChannelPager} The next page of channel results */
 	nextPage() {
-		return getChannelPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
+		return getChannelPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch);
 	}
 }
 
@@ -1600,8 +1622,11 @@ class PeerTubeHistoryVideoPager extends VideoPager {
 // =============================================================================
 
 /**
- * Returns the appropriate HTTP client based on impersonation settings
- * @returns {Object} The HTTP client (httpimp if impersonation is enabled, otherwise http)
+ * Transforms raw PeerTube video API data into PlatformVideo objects with NSFW filtering
+ * @param {Array} data - Raw video data from PeerTube API
+ * @param {boolean} isSearch - Whether these results came from a search request
+ * @param {string} sourceHost - Base URL of the PeerTube instance
+ * @returns {Array} Array of PlatformVideo objects
  */
 function transformVideoResults(data, isSearch, sourceHost) {
 	const nsfwPolicy = getNSFWPolicy();
@@ -1650,6 +1675,10 @@ function transformVideoResults(data, isSearch, sourceHost) {
 		});
 }
 
+/**
+ * Returns the appropriate HTTP client based on impersonation settings
+ * @returns {Object} The HTTP client (httpimp if impersonation is enabled, otherwise http)
+ */
 function getHttpClient() {
 	return (IS_IMPERSONATION_AVAILABLE && _settings?.enableBrowserImpersonation) ? httpimp : http;
 }
@@ -1943,7 +1972,7 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 			v?.followersCount ?? 0
 		);
 
-	}), obj.total > (start + count), path, params, page);
+	}), obj.total > (start + count), path, params, page, sourceHost, isSearch);
 }
 
 /**
@@ -2592,18 +2621,6 @@ function extractPlaylistId(url) {
 		log('Error extracting PeerTube playlist ID:', error);
 		return null;
 	}
-}
-
-/**
- * Loads available options for a plugin setting by its key
- * @param {string} settingKey - The setting variable name to look up
- * @param {Function} [transformCallback] - Optional callback to transform each option
- * @returns {Array} Array of setting options, optionally transformed
- */
-function loadOptionsForSetting(settingKey, transformCallback) {
-	transformCallback ??= (o) => o;
-	const setting = config?.settings?.find((s) => s.variable == settingKey);
-	return setting?.options?.map(transformCallback) ?? [];
 }
 
 /**

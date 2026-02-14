@@ -384,15 +384,18 @@
 			"type": "Header"
 		},
 		{
-			"variable": "searchEngineIndex",
-			"name": "Search Engine",
-			"description": "Current instance searches your server and its followed instances. Sepia Search searches all indexed PeerTube instances.",
-			"type": "Dropdown",
-			"default": "0",
-			"options": [
-				"Current instance",
-				"Sepia Search"
-			]
+			"variable": "searchCurrentInstance",
+			"name": "Current Instance",
+			"description": "Search your server and its followed instances.",
+			"type": "Boolean",
+			"default": "true"
+		},
+		{
+			"variable": "searchSepiaSearch",
+			"name": "Sepia Search",
+			"description": "Search all indexed PeerTube instances via sepiasearch.org.",
+			"type": "Boolean",
+			"default": "false"
 		},
 		{
 			"variable": "safetyHeader",
@@ -469,7 +472,7 @@
 			"Improvement: Add browser impersonation support (experimental, disabled by default in plugin setting);",
 			"Improvement: Initial Cloudflare captcha support (experimental, disabled by default in plugin setting);",
 			"Improvement: Add search suggestions support (experimental, disabled by default in plugin settings);",
-			"Improvement: Add home feed source setting to choose between 'Current instance' and 'Sepia Search' for home feed videos;",
+			"Improvement: Add independent source toggles for home feed and search to choose between current instance, Sepia Search, or both;",
 			"Improvement: Add home feed sorting settings to customize how videos are displayed on the home page (Best, Newest, Oldest, Most Views, Most Likes, Trending, Hot);",
 			"Improvement: Add plugin settings to filter home feed content by multiple categories and languages;",
 			"Improvement: Add tag search support - tag search URLs are now handled as playlists;",
