@@ -1017,14 +1017,6 @@ source.isContentDetailsUrl = function (url) {
 };
 
 
-/**
- * Returns the full video description, preferring the /description endpoint response
- * over the main video detail response which may be truncated on older instances.
- * @param {Object} descriptionResponse - HTTP response from /api/v1/videos/{id}/description
- * @param {string} fallback - Description from the main video detail response
- * @returns {string} The full description or the fallback
- */
-
 source.getContentDetails = function (url) {
 	const videoId = extractVideoId(url);
 	if (!videoId) {
@@ -1411,70 +1403,141 @@ class PeerTubePlaybackTracker extends PlaybackTracker {
 	}
 }
 
+/**
+ * Paginated video results from a PeerTube instance
+ * @extends VideoPager
+ */
 class PeerTubeVideoPager extends VideoPager {
+	/**
+	 * @param {Array} results - Array of PlatformVideo objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} path - API path
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 * @param {string} sourceHost - Base URL of the PeerTube instance
+	 * @param {boolean} isSearch - Whether this is a search request
+	 * @param {Function} cbMap - Optional mapping callback for results
+	 * @param {boolean} useAuth - Whether to use authenticated requests
+	 */
 	constructor(results, hasMore, path, params, page, sourceHost, isSearch, cbMap, useAuth) {
 		super(results, hasMore, { path, params, page, sourceHost, isSearch, cbMap, useAuth });
 	}
 
+	/** @returns {PeerTubeVideoPager} The next page of video results */
 	nextPage() {
 		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch, this.context.cbMap, this.context.useAuth);
 	}
 }
 
+/**
+ * Paginated channel results from a PeerTube instance
+ * @extends ChannelPager
+ */
 class PeerTubeChannelPager extends ChannelPager {
+	/**
+	 * @param {Array} results - Array of PlatformAuthorLink objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} path - API path
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 */
 	constructor(results, hasMore, path, params, page) {
 		super(results, hasMore, { path, params, page });
 	}
 
+	/** @returns {PeerTubeChannelPager} The next page of channel results */
 	nextPage() {
 		return getChannelPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
 	}
 }
 
+/**
+ * Paginated comment results from a PeerTube video
+ * @extends CommentPager
+ */
 class PeerTubeCommentPager extends CommentPager {
+	/**
+	 * @param {Array} results - Array of Comment objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} videoId - The video ID
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 * @param {string} sourceBaseUrl - Base URL of the PeerTube instance
+	 */
 	constructor(results, hasMore, videoId, params, page, sourceBaseUrl) {
 		super(results, hasMore, { videoId, params, page, sourceBaseUrl });
 	}
 
+	/** @returns {PeerTubeCommentPager} The next page of comment results */
 	nextPage() {
 		return getCommentPager(this.context.videoId, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceBaseUrl);
 	}
 }
 
+/**
+ * Paginated playlist results from a PeerTube instance
+ * @extends PlaylistPager
+ */
 class PeerTubePlaylistPager extends PlaylistPager {
+	/**
+	 * @param {Array} results - Array of PlatformPlaylist objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} path - API path
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 * @param {string} sourceHost - Base URL of the PeerTube instance
+	 * @param {boolean} isSearch - Whether this is a search request
+	 */
 	constructor(results, hasMore, path, params, page, sourceHost, isSearch) {
 		super(results, hasMore, { path, params, page, sourceHost, isSearch });
 	}
 
+	/** @returns {PeerTubePlaylistPager} The next page of playlist results */
 	nextPage() {
 		return getPlaylistPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch);
 	}
 }
 
+/**
+ * Paginated video history results from an authenticated user's watch history
+ * @extends VideoPager
+ */
 class PeerTubeHistoryVideoPager extends VideoPager {
+	/**
+	 * @param {Array} results - Array of PlatformVideo objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} path - API path
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 */
 	constructor(results, hasMore, path, params, page) {
 		super(results, hasMore, { path, params, page });
 	}
 
+	/** @returns {PeerTubeHistoryVideoPager} The next page of history results */
 	nextPage() {
 		return getHistoryVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
 	}
 }
 
-/**
- * Validates if a string is a valid URL
- * @param {string} str - The string to validate
- * @returns {boolean} True if the string is a valid URL, false otherwise
- */
-
 // =============================================================================
 // Helper functions
 // =============================================================================
 
+/**
+ * Returns the appropriate HTTP client based on impersonation settings
+ * @returns {Object} The HTTP client (httpimp if impersonation is enabled, otherwise http)
+ */
 function getHttpClient() {
 	return (IS_IMPERSONATION_AVAILABLE && _settings?.enableBrowserImpersonation) ? httpimp : http;
 }
 
+/**
+ * Extracts the full description from a video description API response
+ * @param {Object} descriptionResponse - HTTP response containing the full description
+ * @param {string} fallback - Fallback description to use if response is invalid
+ * @returns {string} The full description or the fallback value
+ */
 function getFullDescription(descriptionResponse, fallback) {
 	if (!descriptionResponse || !descriptionResponse.isOk) return fallback;
 	try {
@@ -1528,6 +1591,12 @@ function processSubtitlesData(subtitlesResponse) {
 	}
 }
 
+/**
+ * Extracts chapter markers from a video's chapters API response
+ * @param {Object} chaptersData - HTTP response containing chapter data
+ * @param {number} videoDuration - Total duration of the video in seconds
+ * @returns {Array<Object>} Array of chapter objects with name, timeStart, timeEnd, and type
+ */
 function extractChapters(chaptersData, videoDuration) {
 	if (!chaptersData || !chaptersData.isOk) return [];
 
@@ -1549,6 +1618,11 @@ function extractChapters(chaptersData, videoDuration) {
 	}
 }
 
+/**
+ * Validates if a string is a valid URL
+ * @param {string} str - The string to validate
+ * @returns {boolean} True if the string is a valid URL, false otherwise
+ */
 function isValidUrl(str) {
 	if (typeof str !== 'string') {
 		return false;
@@ -1709,6 +1783,15 @@ function buildQuery(params) {
 	return (query && query.length > 0) ? query : "";
 }
 
+/**
+ * Fetches channels and creates a PeerTubeChannelPager
+ * @param {string} path - The API path to fetch channels from
+ * @param {Object} params - Query parameters
+ * @param {number} page - Page number for pagination
+ * @param {string} sourceHost - The base URL of the PeerTube instance
+ * @param {boolean} isSearch - Whether this is a search request
+ * @returns {PeerTubeChannelPager} Pager for channel results
+ */
 function getChannelPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
 
 	const count = 20;
@@ -1741,6 +1824,17 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 	}), obj.total > (start + count), path, params, page);
 }
 
+/**
+ * Fetches videos and creates a PeerTubeVideoPager with NSFW filtering
+ * @param {string} path - The API path to fetch videos from
+ * @param {Object} params - Query parameters
+ * @param {number} page - Page number for pagination
+ * @param {string} sourceHost - The base URL of the PeerTube instance
+ * @param {boolean} isSearch - Whether this is a search request
+ * @param {Function} [cbMap] - Optional callback to transform each video data item
+ * @param {boolean} [useAuth=false] - Whether to use authenticated requests
+ * @returns {PeerTubeVideoPager} Pager for video results
+ */
 function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false, cbMap, useAuth = false) {
 
 	const count = 20;
@@ -1832,6 +1926,14 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap, useAuth);
 }
 
+/**
+ * Fetches comment threads for a video and creates a PeerTubeCommentPager
+ * @param {string} videoId - The video ID to fetch comments for
+ * @param {Object} params - Query parameters
+ * @param {number} page - Page number for pagination
+ * @param {string} sourceBaseUrl - The base URL of the PeerTube instance
+ * @returns {PeerTubeCommentPager} Pager for comment results
+ */
 function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
 
 	const count = 20;
@@ -1938,6 +2040,13 @@ function getPlaylistPager(path, params, page, sourceHost = plugin.config.constan
 	return new PeerTubePlaylistPager(playlistResults, hasMore, path, params, page, sourceHost, isSearch);
 }
 
+/**
+ * Fetches the authenticated user's video watch history and creates a PeerTubeHistoryVideoPager
+ * @param {string} path - The API path to fetch history from
+ * @param {Object} params - Query parameters
+ * @param {number} page - Page number for pagination
+ * @returns {PeerTubeHistoryVideoPager} Pager for history video results
+ */
 function getHistoryVideoPager(path, params, page) {
 	const count = 100;
 	const start = (page ?? 0) * count;
@@ -2005,6 +2114,11 @@ function getHistoryVideoPager(path, params, page) {
 	return new PeerTubeHistoryVideoPager(results, obj.total > (start + count), path, params, page);
 }
 
+/**
+ * Parses a version string into an array of numeric parts
+ * @param {string} version - Version string (e.g. "6.1.0" or "v6.1.0")
+ * @returns {number[]} Array of at least 3 numeric version parts [major, minor, patch]
+ */
 function extractVersionParts(version) {
 	// Convert to string and trim any 'v' prefix
 	const versionStr = String(version).replace(/^v/, '');
@@ -2039,6 +2153,12 @@ function getInstanceVersion(configResponse) {
 	}
 }
 
+/**
+ * Checks if a server version is the same as or newer than an expected version
+ * @param {string} testVersion - The version to test
+ * @param {string} expectedVersion - The minimum expected version
+ * @returns {boolean} True if testVersion >= expectedVersion
+ */
 function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {
 	// Handle null or undefined inputs
 	if (testVersion == null || expectedVersion == null) {
@@ -2235,6 +2355,11 @@ function addPlaylistUrlHint(url) {
     return addUrlHint(url, 'isPeertubePlaylist');
 }
 
+/**
+ * Extracts channel ID from PeerTube channel URLs
+ * @param {string} url - PeerTube channel URL (e.g. /c/{id}, /video-channels/{id})
+ * @returns {string|null} Channel ID or null if not a valid channel URL
+ */
 function extractChannelId(url) {
 	try {
 		if (!url) return null;
@@ -2252,6 +2377,11 @@ function extractChannelId(url) {
 	}
 }
 
+/**
+ * Extracts video ID from PeerTube video URLs
+ * @param {string} url - PeerTube video URL (e.g. /w/{id}, /videos/watch/{id})
+ * @returns {string|null} Video ID or null if not a valid video URL
+ */
 function extractVideoId(url) {
 	try {
 		if (!url) return null;
@@ -2312,12 +2442,24 @@ function extractPlaylistId(url) {
 	}
 }
 
+/**
+ * Loads available options for a plugin setting by its key
+ * @param {string} settingKey - The setting variable name to look up
+ * @param {Function} [transformCallback] - Optional callback to transform each option
+ * @returns {Array} Array of setting options, optionally transformed
+ */
 function loadOptionsForSetting(settingKey, transformCallback) {
 	transformCallback ??= (o) => o;
 	const setting = config?.settings?.find((s) => s.variable == settingKey);
 	return setting?.options?.map(transformCallback) ?? [];
 }
 
+/**
+ * Creates an AudioUrlSource from a PeerTube file object
+ * @param {Object} file - PeerTube file object with resolution and URL info
+ * @param {number} duration - Duration of the audio in seconds
+ * @returns {AudioUrlSource} Audio source descriptor
+ */
 function createAudioSource(file, duration) {
 	return new AudioUrlSource({
 		name: file.resolution.label,
@@ -2328,8 +2470,12 @@ function createAudioSource(file, duration) {
 	});
 }
 
-// Create video source based on file and resolution
-
+/**
+ * Creates a VideoUrlSource from a PeerTube file object with resolution lookup
+ * @param {Object} file - PeerTube file object with resolution and URL info
+ * @param {number} duration - Duration of the video in seconds
+ * @returns {VideoUrlSource} Video source descriptor
+ */
 function createVideoSource(file, duration) {
 	const supportedResolution = file.resolution.width && file.resolution.height
 		? { width: file.resolution.width, height: file.resolution.height }
@@ -2345,6 +2491,11 @@ function createVideoSource(file, duration) {
 	});
 }
 
+/**
+ * Builds a media source descriptor from a PeerTube video object, handling HLS, muxed, unmuxed, and audio-only sources
+ * @param {Object} obj - PeerTube video object containing streamingPlaylists and files
+ * @returns {VideoSourceDescriptor|UnMuxVideoSourceDescriptor} Media source descriptor for playback
+ */
 function getMediaDescriptor(obj) {
 
 	let inputFileSources = [];
@@ -2428,8 +2579,11 @@ function getMediaDescriptor(obj) {
 }
 
 
-// Helper function to create a tag playlist from a tag search URL
-
+/**
+ * Creates a PlatformPlaylistDetails from a PeerTube tag search URL
+ * @param {string} url - Tag search URL containing a tagsOneOf parameter
+ * @returns {PlatformPlaylistDetails|null} Playlist details for the tag, or null on failure
+ */
 function getTagPlaylist(url) {
 	try {
 		const urlObj = new URL(url);
@@ -2473,8 +2627,11 @@ function getTagPlaylist(url) {
 	}
 }
 
-// Helper function to map category indices to IDs
-
+/**
+ * Maps a category setting index to a PeerTube category ID
+ * @param {number|string} categoryIndex - Index from settings (1-18 map to category IDs)
+ * @returns {string|null} Category ID string or null if index is out of range
+ */
 function getCategoryId(categoryIndex) {
 	// Convert index to category ID
 	// Index 0 = "" (no category), Index 1 = "1" (Music), Index 2 = "2" (Films), etc.
@@ -2487,8 +2644,11 @@ function getCategoryId(categoryIndex) {
 	return null;
 }
 
-// Helper function to map language indices to language codes
-
+/**
+ * Maps a language setting index to an ISO language code
+ * @param {number|string} languageIndex - Index from settings (1-37 map to language codes)
+ * @returns {string|null} ISO language code or null if index is out of range
+ */
 function getLanguageCode(languageIndex) {
 	const languageMap = [
 		"", // Index 0 = empty
