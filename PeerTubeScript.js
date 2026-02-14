@@ -1,32 +1,16 @@
+// =============================================================================
+// Constants
+// =============================================================================
+
 const PLATFORM = "PeerTube";
+
 const getUserAgent = () => bridge.authUserAgent ?? bridge.captchaUserAgent ?? 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36';
 
 const IS_DESKTOP = bridge.buildPlatform === "desktop";
+
 const IMPERSONATION_TARGET = IS_DESKTOP ? 'chrome136' : 'chrome131_android';
+
 const IS_IMPERSONATION_AVAILABLE = (typeof httpimp !== 'undefined');
-
-if (IS_IMPERSONATION_AVAILABLE) {
-	const httpImpClient = httpimp.getDefaultClient(true);
-	if (httpImpClient.setDefaultImpersonateTarget) {
-		httpImpClient.setDefaultImpersonateTarget(IMPERSONATION_TARGET);
-	}
-}
-
-function getHttpClient() {
-	return (IS_IMPERSONATION_AVAILABLE && _settings?.enableBrowserImpersonation) ? httpimp : http;
-}
-
-let config = {};
-let _settings = {};
-
-let state = {
-	serverVersion: '',
-	isSearchEngineSepiaSearch: false,
-	isHomeContentSepiaSearch: false,
-	defaultHeaders: {
-		'User-Agent': getUserAgent()
-	}
-}
 
 const supportedResolutions = {
 	'1080p': { width: 1920, height: 1080 },
@@ -43,18 +27,53 @@ const URLS = {
 
 // Query parameter to flag private/unlisted playlists that require authentication
 // This is added by getUserPlaylists and checked by getPlaylist
+
 const PRIVATE_PLAYLIST_QUERY_PARAM = '&requiresAuth=1';
 
 // instances are populated during deploy appended to the end of this javascript file
 // this update process is done at update-instances.sh
+
+// =============================================================================
+// Regex patterns
+// =============================================================================
+
+// =============================================================================
+// State
+// =============================================================================
+
+let config = {};
+
+let _settings = {};
+
+let state = {
+	serverVersion: '',
+	isSearchEngineSepiaSearch: false,
+	isHomeContentSepiaSearch: false,
+	defaultHeaders: {
+		'User-Agent': getUserAgent()
+	}
+}
+
 let INDEX_INSTANCES = {
 	instances: []
 };
 
 let SEARCH_ENGINE_OPTIONS = [];
+
 let HOME_CONTENT_SOURCE_OPTIONS = [];
 
+if (IS_IMPERSONATION_AVAILABLE) {
+	const httpImpClient = httpimp.getDefaultClient(true);
+	if (httpImpClient.setDefaultImpersonateTarget) {
+		httpImpClient.setDefaultImpersonateTarget(IMPERSONATION_TARGET);
+	}
+}
+
 Type.Feed.Playlists = "PLAYLISTS";
+
+// =============================================================================
+// Source functions
+// =============================================================================
 
 source.enable = function (conf, settings, saveStateStr) {
 	config = conf ?? {};
@@ -102,7 +121,6 @@ source.saveState = function () {
 	return JSON.stringify(state)
 }
 
-
 source.getHome = function () {
 
 	let sort = '';
@@ -138,7 +156,6 @@ source.getHome = function () {
 	const params = { sort };
 
 
-
 	// Collect category filters from settings
 	const settingSet = new Set([
 		_settings.mainCategoryIndex,
@@ -164,7 +181,6 @@ source.getHome = function () {
 		.filter(languageIndex => languageIndex && parseInt(languageIndex) > 0)
 		.map(languageIndex => getLanguageCode(languageIndex))
 		.filter(Boolean);
-
 
 
 	if (state.isHomeContentSepiaSearch) {
@@ -218,6 +234,7 @@ source.getHome = function () {
 source.searchSuggestions = function (query) {
 	return [];
 };
+
 source.getSearchCapabilities = () => {
 	return new ResultCapabilities([Type.Feed.Mixed, Type.Feed.Videos], [], [
 		new FilterGroup("Upload Date", [
@@ -315,6 +332,7 @@ source.getSearchCapabilities = () => {
 		], false, "scope")
 	]);
 };
+
 source.search = function (query, type, order, filters) {
 	
 	if(IS_TESTING) {
@@ -469,6 +487,7 @@ source.search = function (query, type, order, filters) {
 
 	return getVideoPager('/api/v1/search/videos', params, 0, sourceHost, isSearch);
 };
+
 source.searchChannels = function (query) {
 
 	let sourceHost = '';
@@ -547,8 +566,6 @@ source.isChannelUrl = function (url) {
 	}
 };
 
-
-
 source.getChannel = function (url) {
 
 	const handle = extractChannelId(url);
@@ -596,6 +613,7 @@ source.getChannel = function (url) {
  * 
  * @returns {string[]} An array of subscription URLs.
  */
+
 source.getUserSubscriptions = function() {
 
 	if (!bridge.isLoggedIn()) {
@@ -763,6 +781,7 @@ source.getChannelCapabilities = () => {
 		sorts: [Type.Order.Chronological, "publishedAt"]
 	};
 };
+
 source.getChannelContents = function (url, type, order, filters) {
 	let sort = order;
 	if (sort === Type.Order.Chronological) {
@@ -830,6 +849,7 @@ source.getChannelPlaylists = function (url, order, filters) {
 };
 
 // Adds support for checking if a URL is a playlist URL
+
 source.isPlaylistUrl = function(url) {
 	try {
 		if (!url) return false;
@@ -884,6 +904,7 @@ source.isPlaylistUrl = function(url) {
 };
 
 // Gets a playlist and its information
+
 source.getPlaylist = function(url) {
 	// Check if this is a tag search URL
 	try {
@@ -995,7 +1016,6 @@ source.isContentDetailsUrl = function (url) {
 };
 
 
-
 /**
  * Returns the full video description, preferring the /description endpoint response
  * over the main video detail response which may be truncated on older instances.
@@ -1003,78 +1023,6 @@ source.isContentDetailsUrl = function (url) {
  * @param {string} fallback - Description from the main video detail response
  * @returns {string} The full description or the fallback
  */
-function getFullDescription(descriptionResponse, fallback) {
-	if (!descriptionResponse || !descriptionResponse.isOk) return fallback;
-	try {
-		const data = JSON.parse(descriptionResponse.body);
-		if (data?.description) return data.description;
-	} catch (e) {
-		// ignore
-	}
-	return fallback;
-}
-
-/**
- * Processes captions data from API response into GrayJay subtitle format
- * @param {Object} subtitlesResponse - HTTP response containing captions data
- * @returns {Array} - Array of subtitle objects or empty array if none available
- */
-function processSubtitlesData(subtitlesResponse) {
-	if (!subtitlesResponse.isOk) {
-		log("Failed to get video subtitles", subtitlesResponse);
-		return [];
-	}
-
-	try {
-
-		const baseUrl = getBaseUrl(subtitlesResponse.url);
-
-		const captionsData = JSON.parse(subtitlesResponse.body);
-		if (!captionsData || !captionsData.data || captionsData.total === 0) {
-			return [];
-		}
-
-		// Convert PeerTube captions to GrayJay subtitle format
-		return captionsData.data
-			.map(caption => {
-
-				const subtitleUrl = caption?.fileUrl
-					?? (caption.captionPath ? `${baseUrl}${caption.captionPath}` : ""); //6.1.0
-
-				return {
-					name: `${caption?.language?.label ?? caption?.language?.id} ${caption.automaticallyGenerated ? "(auto-generated)" : ""}`,
-					url: subtitleUrl,
-					format: "text/vtt",
-					language: caption.language.id
-				};
-			})
-			.filter(caption => caption.url);
-	} catch (e) {
-		log("Error parsing captions data", e);
-		return [];
-	}
-}
-
-function extractChapters(chaptersData, videoDuration) {
-	if (!chaptersData || !chaptersData.isOk) return [];
-
-	try {
-		const data = JSON.parse(chaptersData.body);
-		if (!data?.chapters?.length) return [];
-
-		return data.chapters.map(function (chapter, i) {
-			const nextChapter = data.chapters[i + 1];
-			return {
-				name: chapter.title,
-				timeStart: chapter.timecode,
-				timeEnd: nextChapter ? nextChapter.timecode : (videoDuration || 999999),
-				type: Type.Chapter.NORMAL
-			};
-		});
-	} catch (e) {
-		return [];
-	}
-}
 
 source.getContentDetails = function (url) {
 	const videoId = extractVideoId(url);
@@ -1233,6 +1181,7 @@ source.getComments = function (url) {
 	const sourceBaseUrl = getBaseUrl(url);
 	return getCommentPager(videoId, {}, 0, sourceBaseUrl);
 }
+
 source.getSubComments = function (comment) {
 	if (typeof comment === 'string') {
 		try {
@@ -1311,6 +1260,7 @@ source.getSubComments = function (comment) {
  * @param {string} url - The video URL
  * @returns {Object|null} Chat window configuration or null if chat not available
  */
+
 source.getLiveChatWindow = function (url) {
     // Extract video ID and base URL
     const videoId = extractVideoId(url);
@@ -1355,6 +1305,7 @@ source.getLiveChatWindow = function (url) {
 
 
 // Add PlaybackTracker implementation
+
 source.getPlaybackTracker = function (url) {
 
 	if (!_settings.submitActivity) {
@@ -1373,6 +1324,11 @@ source.getPlaybackTracker = function (url) {
 };
 
 //https://docs.joinpeertube.org/api-rest-reference.html#tag/Video/operation/addView
+
+// =============================================================================
+// Pager classes
+// =============================================================================
+
 class PeerTubePlaybackTracker extends PlaybackTracker {
 	/**
 	 * Creates a new PeerTube playback tracker
@@ -1509,6 +1465,89 @@ class PeerTubeHistoryVideoPager extends VideoPager {
  * @param {string} str - The string to validate
  * @returns {boolean} True if the string is a valid URL, false otherwise
  */
+
+// =============================================================================
+// Helper functions
+// =============================================================================
+
+function getHttpClient() {
+	return (IS_IMPERSONATION_AVAILABLE && _settings?.enableBrowserImpersonation) ? httpimp : http;
+}
+
+function getFullDescription(descriptionResponse, fallback) {
+	if (!descriptionResponse || !descriptionResponse.isOk) return fallback;
+	try {
+		const data = JSON.parse(descriptionResponse.body);
+		if (data?.description) return data.description;
+	} catch (e) {
+		// ignore
+	}
+	return fallback;
+}
+
+/**
+ * Processes captions data from API response into GrayJay subtitle format
+ * @param {Object} subtitlesResponse - HTTP response containing captions data
+ * @returns {Array} - Array of subtitle objects or empty array if none available
+ */
+
+function processSubtitlesData(subtitlesResponse) {
+	if (!subtitlesResponse.isOk) {
+		log("Failed to get video subtitles", subtitlesResponse);
+		return [];
+	}
+
+	try {
+
+		const baseUrl = getBaseUrl(subtitlesResponse.url);
+
+		const captionsData = JSON.parse(subtitlesResponse.body);
+		if (!captionsData || !captionsData.data || captionsData.total === 0) {
+			return [];
+		}
+
+		// Convert PeerTube captions to GrayJay subtitle format
+		return captionsData.data
+			.map(caption => {
+
+				const subtitleUrl = caption?.fileUrl
+					?? (caption.captionPath ? `${baseUrl}${caption.captionPath}` : ""); //6.1.0
+
+				return {
+					name: `${caption?.language?.label ?? caption?.language?.id} ${caption.automaticallyGenerated ? "(auto-generated)" : ""}`,
+					url: subtitleUrl,
+					format: "text/vtt",
+					language: caption.language.id
+				};
+			})
+			.filter(caption => caption.url);
+	} catch (e) {
+		log("Error parsing captions data", e);
+		return [];
+	}
+}
+
+function extractChapters(chaptersData, videoDuration) {
+	if (!chaptersData || !chaptersData.isOk) return [];
+
+	try {
+		const data = JSON.parse(chaptersData.body);
+		if (!data?.chapters?.length) return [];
+
+		return data.chapters.map(function (chapter, i) {
+			const nextChapter = data.chapters[i + 1];
+			return {
+				name: chapter.title,
+				timeStart: chapter.timecode,
+				timeEnd: nextChapter ? nextChapter.timecode : (videoDuration || 999999),
+				type: Type.Chapter.NORMAL
+			};
+		});
+	} catch (e) {
+		return [];
+	}
+}
+
 function isValidUrl(str) {
 	if (typeof str !== 'string') {
 		return false;
@@ -1524,6 +1563,7 @@ function isValidUrl(str) {
  * @param {string} url - The URL to check
  * @returns {boolean} True if the URL is for the base instance
  */
+
 function isBaseInstanceUrl(url) {
 	if (!url || !plugin?.config?.constants?.baseUrl) {
 		return false;
@@ -1556,6 +1596,7 @@ function isBaseInstanceUrl(url) {
  * @returns {Array<{isOk: boolean, code: number, body: string|Object}>} Array of responses
  * @throws {ScriptException}
  */
+
 function httpGET(optionsOrUrl) {
 	const client = getHttpClient();
 
@@ -1632,6 +1673,7 @@ function httpGET(optionsOrUrl) {
  * @param {{[key: string]: any}} params Query params
  * @returns {String} Query string
  */
+
 function buildQuery(params) {
 	let query = "";
 	let first = true;
@@ -1845,6 +1887,7 @@ function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.co
  * @param {boolean} isSearch - Whether this is a search request
  * @returns {PlaylistPager} - Pager for playlists
  */
+
 function getPlaylistPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
 	const count = 20;
 	const start = (page ?? 0) * count;
@@ -1982,6 +2025,7 @@ function extractVersionParts(version) {
  * @param {Object} configResponse - HTTP response from /api/v1/config
  * @returns {string|null} The server version string or null
  */
+
 function getInstanceVersion(configResponse) {
 	if (!configResponse || !configResponse.isOk) return null;
 	try {
@@ -2019,6 +2063,7 @@ function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {
 * @param {object} obj  
 * @returns {String} Avatar URL 
 */
+
 function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 
 	const relativePath = [
@@ -2046,6 +2091,7 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 * @param {string} baseUrl - The base URL of the PeerTube instance
 * @returns {String} Banner URL or null if no banner is available
 */
+
 function getBannerUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 
 	const relativePath = [
@@ -2087,6 +2133,7 @@ function getBannerUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
  * // Throws ScriptException: "Invalid URL format: invalid-url"
  * getBaseUrl("invalid-url");
  */
+
 function getBaseUrl(url) {
     if (typeof url !== 'string') {
         throw new ScriptException('URL must be a string');
@@ -2132,6 +2179,7 @@ function getBaseUrl(url) {
  * @param {string} hintValue - The value for the hint parameter
  * @returns {string} - The URL with the hint parameter added
  */
+
 function addUrlHint(url, hintParam, hintValue = '1') {
     if (!url) {
         return url;
@@ -2158,6 +2206,7 @@ function addUrlHint(url, hintParam, hintValue = '1') {
  * @param {string} url - The video URL
  * @returns {string} - The URL with content hint parameter
  */
+
 function addContentUrlHint(url) {
     return addUrlHint(url, 'isPeertubeContent');
 }
@@ -2167,6 +2216,7 @@ function addContentUrlHint(url) {
  * @param {string} url - The channel URL
  * @returns {string} - The URL with channel hint parameter
  */
+
 function addChannelUrlHint(url) {
     return addUrlHint(url, 'isPeertubeChannel');
 }
@@ -2176,6 +2226,7 @@ function addChannelUrlHint(url) {
  * @param {string} url - The playlist URL
  * @returns {string} - The URL with playlist hint parameter
  */
+
 function addPlaylistUrlHint(url) {
     return addUrlHint(url, 'isPeertubePlaylist');
 }
@@ -2196,7 +2247,6 @@ function extractChannelId(url) {
 		return null;
 	}
 }
-
 
 function extractVideoId(url) {
 	try {
@@ -2220,6 +2270,7 @@ function extractVideoId(url) {
  * @param {string} url - PeerTube playlist URL
  * @returns {string|null} - Playlist ID or null if not a valid playlist URL
  */
+
 function extractPlaylistId(url) {
 	try {
 		if (!url) return null;
@@ -2257,13 +2308,11 @@ function extractPlaylistId(url) {
 	}
 }
 
-
 function loadOptionsForSetting(settingKey, transformCallback) {
 	transformCallback ??= (o) => o;
 	const setting = config?.settings?.find((s) => s.variable == settingKey);
 	return setting?.options?.map(transformCallback) ?? [];
 }
-
 
 function createAudioSource(file, duration) {
 	return new AudioUrlSource({
@@ -2276,6 +2325,7 @@ function createAudioSource(file, duration) {
 }
 
 // Create video source based on file and resolution
+
 function createVideoSource(file, duration) {
 	const supportedResolution = file.resolution.width && file.resolution.height
 		? { width: file.resolution.width, height: file.resolution.height }
@@ -2375,6 +2425,7 @@ function getMediaDescriptor(obj) {
 
 
 // Helper function to create a tag playlist from a tag search URL
+
 function getTagPlaylist(url) {
 	try {
 		const urlObj = new URL(url);
@@ -2419,6 +2470,7 @@ function getTagPlaylist(url) {
 }
 
 // Helper function to map category indices to IDs
+
 function getCategoryId(categoryIndex) {
 	// Convert index to category ID
 	// Index 0 = "" (no category), Index 1 = "1" (Music), Index 2 = "2" (Films), etc.
@@ -2432,6 +2484,7 @@ function getCategoryId(categoryIndex) {
 }
 
 // Helper function to map language indices to language codes
+
 function getLanguageCode(languageIndex) {
 	const languageMap = [
 		"", // Index 0 = empty
@@ -2486,6 +2539,7 @@ function getLanguageCode(languageIndex) {
  * Helper function to get the NSFW policy from settings
  * @returns {string} The NSFW policy: "do_not_list", "blur", or "display"
  */
+
 function getNSFWPolicy() {
 	const policyIndex = parseInt(_settings.nsfwPolicy) || 0;
 	const policies = ["do_not_list", "blur", "display"];
@@ -2498,6 +2552,7 @@ function getNSFWPolicy() {
  * @param {Object} resp - The HTTP response object
  * @throws {CaptchaRequiredException} If the response body contains a captcha challenge
  */
+
 function throwIfCaptcha(resp) {
 	if (!_settings.enableCloudflareCaptcha) return;
 	if (resp?.body && resp?.code == 403) {
@@ -2507,13 +2562,14 @@ function throwIfCaptcha(resp) {
 	}
 }
 
+log("loaded");
+
 // Those instances were requested by users
 // Those hostnames are exclusively used to help the plugin know if a hostname is a PeerTube instance
 // Grayjay nor futo are associated, does not endorse or are responsible for the content in those instances.
 INDEX_INSTANCES.instances = [
 	...INDEX_INSTANCES.instances,'poast.tv','videos.upr.fr','peertube.red'
 ]
-
 // BEGIN AUTOGENERATED INSTANCES
 // This content is autogenerated during deployment using update-instances.sh
 // Sources: https://instances.joinpeertube.org, https://api.fediverse.observer/, and https://api.fedidb.org/
