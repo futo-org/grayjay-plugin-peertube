@@ -1,20 +1,26 @@
 stages:
   - deploy
 
+variables:
+  PLUGIN_NAME: PeerTube
+  ICON_FILE: peertube.png
+  SCRIPT_FILE: PeerTubeScript.js 
+  CONFIG_FILE: PeerTubeConfig.js
+
 deploy-master:
   stage: deploy
+  variables:
+    PRE_RELEASE: "false"
   script:
-    - export PRE_RELEASE=false
     - sh deploy.sh
   only:
     - master
-  when: manual
 
 deploy-dev:
   stage: deploy
+  variables:
+    PRE_RELEASE: "true"
   script:
-    - export PRE_RELEASE=true
     - sh deploy.sh
   only:
     - dev
-  when: manual
