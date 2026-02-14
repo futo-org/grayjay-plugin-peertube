@@ -377,7 +377,7 @@
 		{
 			"variable": "searchHeader",
 			"name": "Search",
-			"description": "Search engine for finding content",
+			"description": "Search engine for finding content.",
 			"type": "Header"
 		},
 		{
@@ -394,7 +394,7 @@
 		{
 			"variable": "safetyHeader",
 			"name": "Safety",
-			"description": "Content safety and filtering options",
+			"description": "Content safety and filtering options.",
 			"type": "Header"
 		},
 		{
@@ -432,13 +432,13 @@
 		{
 			"variable": "ExperimentalHeader",
 			"name": "Experimental",
-			"description": "Features that are still being tested and may not work as expected",
+			"description": "Features that are still being tested and may not work as expected.",
 			"type": "Header"
 		},
 		{
 			"variable": "enableBrowserImpersonation",
 			"name": "Browser Impersonation",
-			"description": "Impersonate a browser's TLS fingerprint to bypass bot detection (e.g. Cloudflare). Requires HttpImp.",
+			"description": "Impersonate a browser's TLS fingerprint to bypass bot detection (e.g. Cloudflare).",
 			"type": "Boolean",
 			"default": "false"
 		},
