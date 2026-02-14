@@ -50,10 +50,6 @@ let _settings = {};
 
 let state = {
 	serverVersion: '',
-	searchCurrentInstance: true,
-	searchSepiaSearch: false,
-	homeSourceCurrentInstance: true,
-	homeSourceSepiaSearch: false,
 	defaultHeaders: {
 		'User-Agent': getUserAgent()
 	}
@@ -101,19 +97,6 @@ source.enable = function (conf, settings, saveStateStr) {
 		}
 	} catch (ex) {
 		log('Failed to parse saveState:' + ex);
-	}
-
-	// Always recalculate these flags based on current settings
-	state.homeSourceCurrentInstance = _settings.homeSourceCurrentInstance !== false && _settings.homeSourceCurrentInstance !== "false";
-	state.homeSourceSepiaSearch = _settings.homeSourceSepiaSearch === true || _settings.homeSourceSepiaSearch === "true";
-	state.searchCurrentInstance = _settings.searchCurrentInstance !== false && _settings.searchCurrentInstance !== "false";
-	state.searchSepiaSearch = _settings.searchSepiaSearch === true || _settings.searchSepiaSearch === "true";
-	// Fallback: if neither is enabled, default to current instance
-	if (!state.homeSourceCurrentInstance && !state.homeSourceSepiaSearch) {
-		state.homeSourceCurrentInstance = true;
-	}
-	if (!state.searchCurrentInstance && !state.searchSepiaSearch) {
-		state.searchCurrentInstance = true;
 	}
 
 	if (!didSaveState) {
@@ -209,7 +192,7 @@ source.getHome = function () {
 		'-hot': '-views'           // Hot -> most views (closest equivalent)
 	};
 
-	if (state.homeSourceCurrentInstance && state.homeSourceSepiaSearch) {
+	if (_settings.homeSourceCurrentInstance === true && _settings.homeSourceSepiaSearch === true) {
 		// Both sources: fetch in parallel, merge, deduplicate
 		const localContext = {
 			path: '/api/v1/videos',
@@ -224,7 +207,7 @@ source.getHome = function () {
 			sourceHost: 'https://sepiasearch.org'
 		};
 		return getMixedVideoPager(localContext, sepiaContext);
-	} else if (state.homeSourceSepiaSearch) {
+	} else if (_settings.homeSourceSepiaSearch === true) {
 		// Sepia Search only
 		params.resultType = 'videos';
 		params.sort = sepiaSearchSortMap[sort] || 'match';
@@ -252,10 +235,10 @@ source.searchSuggestions = function (query) {
 
 		// Fetch from enabled sources
 		const requests = [];
-		if (state.searchCurrentInstance) {
+		if (_settings.searchCurrentInstance === true) {
 			requests.push(`${plugin.config.constants.baseUrl}/api/v1/search/videos?${buildQuery(baseParams)}`);
 		}
-		if (state.searchSepiaSearch) {
+		if (_settings.searchSepiaSearch === true) {
 			requests.push(`https://sepiasearch.org/api/v1/search/videos?${buildQuery({ ...baseParams, resultType: 'videos' })}`);
 		}
 		if (requests.length === 0) {
@@ -544,14 +527,14 @@ source.search = function (query, type, order, filters) {
 				if (params.nsfw) sepiaParams.nsfw = params.nsfw;
 
 				return getVideoPager('/api/v1/search/videos', sepiaParams, 0, 'https://sepiasearch.org', true);
-			} else if (scopeFilter === "local" && state.searchCurrentInstance) {
+			} else if (scopeFilter === "local" && _settings.searchCurrentInstance === true) {
 				params.searchTarget = "local";
 			}
 			// "federated" means federated (default), so no parameter needed
 		}
 	}
 
-	if (state.searchCurrentInstance && state.searchSepiaSearch) {
+	if (_settings.searchCurrentInstance === true && _settings.searchSepiaSearch === true) {
 		// Both sources: fetch in parallel, merge, deduplicate, sort
 		const localContext = {
 			path: '/api/v1/search/videos',
@@ -566,7 +549,7 @@ source.search = function (query, type, order, filters) {
 			sourceHost: 'https://sepiasearch.org'
 		};
 		return getMixedVideoPager(localContext, sepiaContext);
-	} else if (state.searchSepiaSearch) {
+	} else if (_settings.searchSepiaSearch === true) {
 		params.resultType = 'videos';
 		params.sort = '-createdAt';
 		return getVideoPager('/api/v1/search/videos', params, 0, 'https://sepiasearch.org', true);
@@ -579,7 +562,7 @@ source.searchChannels = function (query) {
 
 	// Channel search doesn't support mixed pager (different result type),
 	// so use Sepia Search if enabled, otherwise current instance
-	const sourceHost = state.searchSepiaSearch
+	const sourceHost = _settings.searchSepiaSearch === true
 		? 'https://sepiasearch.org'
 		: plugin.config.constants.baseUrl;
 
@@ -591,7 +574,7 @@ source.searchChannels = function (query) {
 source.searchPlaylists = function (query) {
 	// Playlist search doesn't support mixed pager (different result type),
 	// so use Sepia Search if enabled, otherwise current instance
-	const sourceHost = state.searchSepiaSearch
+	const sourceHost = _settings.searchSepiaSearch === true
 		? 'https://sepiasearch.org'
 		: plugin.config.constants.baseUrl;
 
@@ -599,7 +582,7 @@ source.searchPlaylists = function (query) {
 		search: query
 	};
 
-	if (state.searchSepiaSearch) {
+	if (_settings.searchSepiaSearch === true) {
 		params.resultType = 'video-playlists';
 		params.sort = '-createdAt';
 	}
@@ -1992,16 +1975,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count };
 
-	// Apply NSFW filtering based on policy and no explicit nsfw parameter is set
-	if (!params.hasOwnProperty('nsfw')) {
-		const nsfwPolicy = getNSFWPolicy();
-		if (nsfwPolicy === "do_not_list") {
-			params.nsfw = 'false';
-		} else {
-			// For "blur" and "display" policies, set nsfw=both to allow all content
-			params.nsfw = 'both';
-		}
-	}
+	applyNSFWFilter(params);
 
 	const url = `${sourceHost}${path}`;
 
@@ -2035,14 +2009,8 @@ function getMixedVideoPager(localContext, sepiaContext) {
 	const localParams = { ...localContext.params, start: localStart, count };
 	const sepiaParams = { ...sepiaContext.params, start: sepiaStart, count };
 
-	// Apply NSFW filtering
-	const nsfwPolicy = getNSFWPolicy();
-	if (!localParams.hasOwnProperty('nsfw')) {
-		localParams.nsfw = nsfwPolicy === "do_not_list" ? 'false' : 'both';
-	}
-	if (!sepiaParams.hasOwnProperty('nsfw')) {
-		sepiaParams.nsfw = nsfwPolicy === "do_not_list" ? 'false' : 'both';
-	}
+	applyNSFWFilter(localParams);
+	applyNSFWFilter(sepiaParams);
 
 	const localUrl = `${localContext.sourceHost}${localContext.path}?${buildQuery(localParams)}`;
 	const sepiaUrl = `${sepiaContext.sourceHost}${sepiaContext.path}?${buildQuery(sepiaParams)}`;
@@ -2244,53 +2212,15 @@ function getHistoryVideoPager(path, params, page) {
 		return new VideoPager([], false);
 	}
 
-	const nsfwPolicy = getNSFWPolicy();
+	const results = transformVideoResults(obj.data, true, plugin.config.constants.baseUrl);
 
-	const results = obj.data.map(video => {
-		const sourceHost = plugin.config.constants.baseUrl;
-		
-		const baseUrl = [
-			video?.url,
-			video?.account?.url,
-			video?.channel?.url
-		].filter(Boolean).map(getBaseUrl).find(Boolean) || sourceHost;
-
-		const contentUrl = addContentUrlHint(video.url || `${baseUrl}/videos/watch/${video.uuid}`);
-		const channelUrl = addChannelUrlHint(video.channel.url);
-		
-		const isNSFW = video.nsfw === true;
-		let thumbnails;
-
-		if (isNSFW && nsfwPolicy === "blur") {
-			thumbnails = new Thumbnails([]);
-		} else {
-			thumbnails = new Thumbnails([new Thumbnail(`${baseUrl}${video.thumbnailPath}`, 0)]);
+	// Attach playback position from watch history
+	for (let i = 0; i < results.length; i++) {
+		const history = obj.data[i]?.userHistory;
+		if (history && history.currentTime) {
+			results[i].playbackTime = history.currentTime;
 		}
-
-		const platformVideo = new PlatformVideo({
-			id: new PlatformID(PLATFORM, video.uuid, config.id),
-			name: video.name ?? "",
-			thumbnails: thumbnails,
-			author: new PlatformAuthorLink(
-				new PlatformID(PLATFORM, video.channel.name, config.id),
-				video.channel.displayName,
-				channelUrl,
-				getAvatarUrl(video, baseUrl)
-			),
-			datetime: Math.round((new Date(video.publishedAt)).getTime() / 1000),
-			duration: video.duration,
-			viewCount: video.isLive ? (video.viewers ?? video.views) : video.views,
-			url: contentUrl,
-			isLive: video.isLive
-		});
-		
-		
-		if (video.userHistory && video.userHistory.currentTime) {
-			platformVideo.playbackTime = video.userHistory.currentTime;
-		}
-
-		return platformVideo;
-	});
+	}
 
 	return new PeerTubeHistoryVideoPager(results, obj.total > (start + count), path, params, page);
 }
@@ -2868,15 +2798,26 @@ function getLanguageCode(languageIndex) {
 }
 
 
+
 /**
- * Helper function to get the NSFW policy from settings
+ * Returns the user's NSFW content policy from settings
  * @returns {string} The NSFW policy: "do_not_list", "blur", or "display"
  */
-
 function getNSFWPolicy() {
 	const policyIndex = parseInt(_settings.nsfwPolicy) || 0;
 	const policies = ["do_not_list", "blur", "display"];
 	return policies[policyIndex] || "do_not_list";
+}
+
+/**
+ * Sets the nsfw query parameter on params based on the user's NSFW policy,
+ * unless an explicit nsfw value is already set.
+ * @param {Object} params - Query parameters object to modify in place
+ */
+function applyNSFWFilter(params) {
+	if (params.hasOwnProperty('nsfw')) return;
+	const nsfwPolicy = getNSFWPolicy();
+	params.nsfw = nsfwPolicy === "do_not_list" ? 'false' : 'both';
 }
 
 /**
