@@ -235,7 +235,69 @@ source.getHome = function () {
 };
 
 source.searchSuggestions = function (query) {
-	return [];
+	if (!_settings.enableSearchSuggestions) return [];
+	if (!query || query.trim().length < 2) return [];
+
+	try {
+		const sourceHost = state.isSearchEngineSepiaSearch
+			? 'https://sepiasearch.org'
+			: plugin.config.constants.baseUrl;
+
+		const params = {
+			search: query.trim(),
+			start: 0,
+			count: 10
+		};
+
+		const nsfwPolicy = getNSFWPolicy();
+		if (nsfwPolicy !== 'display') {
+			params.nsfw = false;
+		}
+
+		if (state.isSearchEngineSepiaSearch) {
+			params.resultType = 'videos';
+		}
+
+		const url = `${sourceHost}/api/v1/search/videos?${buildQuery(params)}`;
+		const [resp] = httpGET(url);
+
+		if (!resp.isOk) return [];
+
+		const data = JSON.parse(resp.body);
+		if (!data?.data?.length) return [];
+
+		// Collect unique tags and video titles that match the query
+		const queryLower = query.trim().toLowerCase();
+		const seen = new Set();
+		const suggestions = [];
+
+		for (const video of data.data) {
+			// Add matching video titles
+			if (video.name && video.name.toLowerCase().includes(queryLower)) {
+				const key = video.name.toLowerCase();
+				if (!seen.has(key)) {
+					seen.add(key);
+					suggestions.push(video.name);
+				}
+			}
+
+			// Add matching tags
+			for (const tag of (video.tags ?? [])) {
+				if (tag.toLowerCase().includes(queryLower)) {
+					const key = tag.toLowerCase();
+					if (!seen.has(key)) {
+						seen.add(key);
+						suggestions.push(tag);
+					}
+				}
+			}
+		}
+
+		return suggestions.slice(0, 10);
+	} catch (e) {
+		log("Failed to get search suggestions", e);
+		return [];
+	}
 };
 
 source.getSearchCapabilities = () => {

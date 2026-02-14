@@ -437,6 +437,13 @@
 			"description": "When enabled, instances protected by Cloudflare will prompt you to solve a captcha instead of failing silently. This allows access to PeerTube instances behind Cloudflare bot protection.",
 			"type": "Boolean",
 			"default": "false"
+		},
+		{
+			"variable": "enableSearchSuggestions",
+			"name": "Search Suggestions",
+			"description": "When enabled, search suggestions will be fetched from the search API as you type. This makes an API request per keystroke which may increase load on the instance.",
+			"type": "Boolean",
+			"default": "false"
 		}
 	],
 	"changelog": {
@@ -447,6 +454,7 @@
 			"Improvement: Content chapters;",
 			"Improvement: Add browser impersonation support (experimental, disabled by default in plugin setting);",
 			"Improvement: Initial Cloudflare captcha support (experimental, disabled by default in plugin setting);",
+			"Improvement: Add search suggestions support (experimental, disabled by default in plugin settings);",
 			"Improvement: Add home feed source setting to choose between 'Current instance' and 'Sepia Search' for home feed videos;",
 			"Improvement: Add home feed sorting settings to customize how videos are displayed on the home page (Best, Newest, Oldest, Most Views, Most Likes, Trending, Hot);",
 			"Improvement: Add plugin settings to filter home feed content by multiple categories and languages;",
