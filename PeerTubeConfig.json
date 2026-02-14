@@ -13,6 +13,7 @@
 	"scriptSignature": "",
 	"scriptPublicKey": "",
 	"packages": ["Http"],
+	"packagesOptional": ["HttpImp"],
 	"allowEval": false,
 	"allowUrls": [
 		"everywhere"
@@ -424,6 +425,13 @@
 			"type": "Header"
 		},
 		{
+			"variable": "enableBrowserImpersonation",
+			"name": "Browser Impersonation",
+			"description": "When enabled, HTTP requests will impersonate a real browser's TLS fingerprint to bypass bot detection (e.g. Cloudflare). Requires the HttpImp package to be available.",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
 			"variable": "enableCloudflareCaptcha",
 			"name": "Cloudflare Captcha Support",
 			"description": "When enabled, instances protected by Cloudflare will prompt you to solve a captcha instead of failing silently. This allows access to PeerTube instances behind Cloudflare bot protection.",
@@ -437,6 +445,7 @@
 			"Improvement: Import user subscriptions;",
 			"Improvement: Import user playlists;",
 			"Improvement: Content chapters",
+      "Improvement: Add browser impersonation support (experimental disabled by default in plugin setting);",
 			"Improvement: initial Cloudflare captcha support (experimental disabled  by default);",
 			"Improvement: Add home feed source setting to choose between 'Current instance' and 'Sepia Search' for home feed videos;",
 			"Improvement: Add home feed sorting settings to customize how videos are displayed on the home page (Best, Newest, Oldest, Most Views, Most Likes, Trending, Hot);",

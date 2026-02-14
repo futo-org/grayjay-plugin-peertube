@@ -1,6 +1,21 @@
 const PLATFORM = "PeerTube";
 const getUserAgent = () => bridge.authUserAgent ?? bridge.captchaUserAgent ?? 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36';
 
+const IS_DESKTOP = bridge.buildPlatform === "desktop";
+const IMPERSONATION_TARGET = IS_DESKTOP ? 'chrome136' : 'chrome131_android';
+const IS_IMPERSONATION_AVAILABLE = (typeof httpimp !== 'undefined');
+
+if (IS_IMPERSONATION_AVAILABLE) {
+	const httpImpClient = httpimp.getDefaultClient(true);
+	if (httpImpClient.setDefaultImpersonateTarget) {
+		httpImpClient.setDefaultImpersonateTarget(IMPERSONATION_TARGET);
+	}
+}
+
+function getHttpClient() {
+	return (IS_IMPERSONATION_AVAILABLE && _settings?.enableBrowserImpersonation) ? httpimp : http;
+}
+
 let config = {};
 let _settings = {};
 
@@ -73,13 +88,11 @@ source.enable = function (conf, settings, saveStateStr) {
 	state.isHomeContentSepiaSearch = HOME_CONTENT_SOURCE_OPTIONS[parseInt(_settings.homeContentSourceIndex)] == 'Sepia Search'
 
 	if (!didSaveState) {
-		const [currentInstanceConfig] = http.batch()
-			.GET(`${plugin.config.constants.baseUrl}/api/v1/config`, state.defaultHeaders)
-			.execute();
-
-		if (currentInstanceConfig.isOk) {
-			const serverConfig = JSON.parse(currentInstanceConfig.body);
+		try {
+			const [{ body: serverConfig }] = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/config`, parseResponse: true });
 			state.serverVersion = serverConfig.serverVersion;
+		} catch (e) {
+			log("Failed to detect server version, continuing with defaults: " + e);
 		}
 	}
 
@@ -548,7 +561,7 @@ source.getChannel = function (url) {
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-channels/${handle}`;
 
 	try {
-		const obj = httpGET({ url: urlWithParams, parseResponse: true });
+		const [{ body: obj }] = httpGET({ url: urlWithParams, parseResponse: true });
 
 		// Add URL hint using utility function
 		const channelUrl = obj.url || `${sourceBaseUrl}/video-channels/${handle}`;
@@ -597,8 +610,9 @@ source.getUserSubscriptions = function() {
 	const endpointUrl = `${plugin.config.constants.baseUrl}/api/v1/users/me/subscriptions`;
 	const initialRequestUrl = `${endpointUrl}${buildQuery(initialParams)}`;
 	
+	let initialResponseBody;
 	try {
-		var initialResponseBody = httpGET({ url: initialRequestUrl, useAuthenticated: true, parseResponse: true });
+		[{ body: initialResponseBody }] = httpGET({ url: initialRequestUrl, useAuthenticated: true, parseResponse: true });
 	} catch (e) {
 		log("Failed to get user subscriptions", e);
 		return [];
@@ -619,18 +633,17 @@ source.getUserSubscriptions = function() {
 	const remainingPages = Math.ceil(remainingSubscriptions / itemsPerPage);
 
 	if (remainingPages > 1) {
-		const batchRequest = http.batch();
+		const batchUrls = [];
 		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
 			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
-			batchRequest.GET(`${endpointUrl}${buildQuery(pageParams)}`, state.defaultHeaders, true);
+			batchUrls.push({ url: `${endpointUrl}${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
 		}
-		const batchResponses = batchRequest.execute();
-		
+		const batchResponses = httpGET(batchUrls);
+
 		batchResponses.forEach(batchResponse => {
 			if (batchResponse.isOk && batchResponse.code === 200) {
-				const batchResponseBody = JSON.parse(batchResponse.body);
-				if (batchResponseBody.data) {
-					batchResponseBody.data.forEach(subscription => {
+				if (batchResponse.body.data) {
+					batchResponse.body.data.forEach(subscription => {
 						if (subscription.url) subscriptionUrls.push(subscription.url);
 					});
 				}
@@ -640,7 +653,7 @@ source.getUserSubscriptions = function() {
 		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
 			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
 			try {
-				const pageResponseBody = httpGET({ url: `${endpointUrl}${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
+				const [{ body: pageResponseBody }] = httpGET({ url: `${endpointUrl}${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
 				if (pageResponseBody.data) {
 					pageResponseBody.data.forEach(subscription => {
 						if (subscription.url) subscriptionUrls.push(subscription.url);
@@ -666,8 +679,9 @@ source.getUserSubscriptions = function() {
 // };
 
 source.getUserPlaylists = function() {
+	let meData;
 	try {
-		var meData = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/users/me`, useAuthenticated: true, parseResponse: true });
+		[{ body: meData }] = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/users/me`, useAuthenticated: true, parseResponse: true });
 	} catch (e) {
 		return [];
 	}
@@ -691,8 +705,9 @@ source.getUserPlaylists = function() {
 		return url;
 	};
 
+	let initialResponseBody;
 	try {
-		var initialResponseBody = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: 0, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
+		[{ body: initialResponseBody }] = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: 0, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
 	} catch (e) {
 		return [];
 	}
@@ -709,15 +724,14 @@ source.getUserPlaylists = function() {
 	const remainingPages = Math.ceil((total - playlistUrls.length) / itemsPerPage);
 
 	if (remainingPages > 1) {
-		const batch = http.batch();
+		const batchUrls = [];
 		for (let i = 1; i <= remainingPages; i++) {
-			batch.GET(`${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, state.defaultHeaders, true);
+			batchUrls.push({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
 		}
-		batch.execute().forEach(r => {
+		httpGET(batchUrls).forEach(r => {
 			if (r.isOk && r.code === 200) {
-				const data = JSON.parse(r.body).data;
-				if (data) {
-					data.forEach(p => {
+				if (r.body.data) {
+					r.body.data.forEach(p => {
 						const url = buildPlaylistUrl(p);
 						if (url) playlistUrls.push(url);
 					});
@@ -727,7 +741,7 @@ source.getUserPlaylists = function() {
 	} else {
 		for (let i = 1; i <= remainingPages; i++) {
 			try {
-				const data = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true }).data;
+				const [{ body: { data } }] = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
 				if (data) {
 					data.forEach(p => {
 						const url = buildPlaylistUrl(p);
@@ -899,7 +913,7 @@ source.getPlaylist = function(url) {
 	
 	try {
 		// Only use auth for private playlists from the base instance
-		var playlist = httpGET({ url: urlWithParams, useAuthenticated: requiresAuth, parseResponse: true });
+		const [{ body: playlist }] = httpGET({ url: urlWithParams, useAuthenticated: requiresAuth, parseResponse: true });
 	} catch (e) {
 		log("Failed to get playlist", e);
 		return null;
@@ -1071,12 +1085,12 @@ source.getContentDetails = function (url) {
 	const sourceBaseUrl = getBaseUrl(url);
 	
 	// Create a batch request for video details, captions, chapters and instance config
-	const [videoDetails, captionsData, chaptersData, instanceConfig] = http.batch()
-		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, state.defaultHeaders)
-		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`, state.defaultHeaders)
-		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`, state.defaultHeaders)
-		.GET(`${sourceBaseUrl}/api/v1/config`, state.defaultHeaders)
-		.execute();
+	const [videoDetails, captionsData, chaptersData, instanceConfig] = httpGET([
+		`${sourceBaseUrl}/api/v1/videos/${videoId}`,
+		`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`,
+		`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`,
+		`${sourceBaseUrl}/api/v1/config`
+	]);
 	
 	if (!videoDetails.isOk) {
 		throwIfCaptcha(videoDetails);
@@ -1114,7 +1128,7 @@ source.getContentDetails = function (url) {
 		&& fullDescription && fullDescription.length >= 250 && fullDescription.endsWith('...')) {
 		try {
 			const descId = obj.uuid || videoId;
-			const descResp = httpGET(`${sourceBaseUrl}/api/v1/videos/${descId}/description`);
+			const [descResp] = httpGET(`${sourceBaseUrl}/api/v1/videos/${descId}/description`);
 			fullDescription = getFullDescription(descResp, fullDescription);
 		} catch (e) {
 			log("Failed to fetch full description", e);
@@ -1172,7 +1186,7 @@ source.getContentRecommendations = function (url, obj) {
 
 	if (!obj && videoId) {
 		try {
-			const videoData = httpGET({ url: `${sourceHost}/api/v1/videos/${videoId}`, parseResponse: true });
+			const [{ body: videoData }] = httpGET({ url: `${sourceHost}/api/v1/videos/${videoId}`, parseResponse: true });
 			if (videoData) {
 				tagsOneOf = videoData?.tags ?? []
 			}
@@ -1204,9 +1218,11 @@ source.getContentChapters = function (url, chaptersData, videoDuration) {
 
 	const sourceBaseUrl = getBaseUrl(url);
 	try {
-		const resp = httpGET(`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`);
-		const obj = httpGET({ url: `${sourceBaseUrl}/api/v1/videos/${videoId}`, parseResponse: true });
-		return extractChapters(resp, obj?.duration);
+		const [chaptersResp, videoData] = httpGET([
+			`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`,
+			{ url: `${sourceBaseUrl}/api/v1/videos/${videoId}`, parseResponse: true }
+		]);
+		return extractChapters(chaptersResp, videoData?.body?.duration);
 	} catch (e) {
 		return [];
 	}
@@ -1253,7 +1269,7 @@ source.getSubComments = function (comment) {
 	const apiUrl = `${sourceBaseUrl}/api/v1/videos/${videoId}/comment-threads/${commentId}`;
 	
 	try {
-		const obj = httpGET({ url: apiUrl, parseResponse: true });
+		const [{ body: obj }] = httpGET({ url: apiUrl, parseResponse: true });
 		
 		// Extract replies from the comment thread response
 		const replies = obj.children || [];
@@ -1306,7 +1322,7 @@ source.getLiveChatWindow = function (url) {
     
     // Check if the video is live and has chat enabled
     try {
-        const videoData = httpGET({ url: `${sourceBaseUrl}/api/v1/videos/${videoId}`, parseResponse: true });
+        const [{ body: videoData }] = httpGET({ url: `${sourceBaseUrl}/api/v1/videos/${videoId}`, parseResponse: true });
         
         // Only proceed if the video is live
         if (!videoData.isLive) {
@@ -1431,7 +1447,7 @@ class PeerTubePlaybackTracker extends PlaybackTracker {
 			this.seekOccurred = false;
 		}
 
-		http.POST(url, JSON.stringify(body), {
+		getHttpClient().POST(url, JSON.stringify(body), {
 			...state.defaultHeaders,
 			"Content-Type": "application/json"
 		}, false);
@@ -1522,17 +1538,51 @@ function isBaseInstanceUrl(url) {
 }
 
 /**
- * Gets the requested url and returns the response body either as a string or as a parsed json object
- * @param {Object|string} optionsOrUrl - The options object or URL string
- * @param {string} optionsOrUrl.url - The URL to call (when using object)
- * @param {boolean} [optionsOrUrl.useAuthenticated=false] - If true, will use authenticated headers (only for base instance URLs)
- * @param {boolean} [optionsOrUrl.parseResponse=false] - If true, will parse the response as json and check for errors
- * @param {Object} [optionsOrUrl.headers=null] - Custom headers to use for the request
- * @returns {Object} the response object or the parsed json object
+ * Performs GET request(s) with error handling and optional JSON parsing.
+ * Always returns an array of response objects.
+ *
+ * Single:  const [resp] = httpGET(url)
+ * Parsed:  const [{ body: data }] = httpGET({ url, parseResponse: true })
+ * Batch:   const [r1, r2] = httpGET([url1, url2])
+ *
+ * Each response has the same shape as http.GET(): { isOk, code, body }.
+ * When parseResponse is true, body contains the parsed JSON instead of a string.
+ *
+ * @param {string|Object|Array<string|Object>} optionsOrUrl - URL string, options object, or array for batch
+ * @param {string} optionsOrUrl.url - The URL to call
+ * @param {boolean} [optionsOrUrl.useAuthenticated=false] - Use authenticated headers (base instance only)
+ * @param {boolean} [optionsOrUrl.parseResponse=false] - Parse body as JSON
+ * @param {Object} [optionsOrUrl.headers=null] - Custom headers (defaults to state.defaultHeaders)
+ * @returns {Array<{isOk: boolean, code: number, body: string|Object}>} Array of responses
  * @throws {ScriptException}
  */
 function httpGET(optionsOrUrl) {
-	// Check if parameter is a string URL
+	const client = getHttpClient();
+
+	if (Array.isArray(optionsOrUrl)) {
+		const batch = client.batch();
+		const parseFlags = [];
+		for (const req of optionsOrUrl) {
+			const isString = typeof req === 'string';
+			const url = isString ? req : req.url;
+			const headers = (isString ? null : req.headers) ?? state.defaultHeaders;
+			const useAuth = !isString && req.useAuthenticated && isBaseInstanceUrl(url);
+			parseFlags.push(!isString && !!req.parseResponse);
+			batch.GET(url, headers, useAuth);
+		}
+		const responses = batch.execute();
+		return responses.map((resp, i) => {
+			if (parseFlags[i] && resp.isOk) {
+				const json = JSON.parse(resp.body);
+				if (json.errors) {
+					throw new ScriptException(json.errors[0].message);
+				}
+				return { isOk: resp.isOk, code: resp.code, body: json };
+			}
+			return resp;
+		});
+	}
+
 	let options;
 	if (typeof optionsOrUrl === 'string') {
 		if (!isValidUrl(optionsOrUrl)) {
@@ -1542,7 +1592,7 @@ function httpGET(optionsOrUrl) {
 	} else if (typeof optionsOrUrl === 'object' && optionsOrUrl !== null) {
 		options = optionsOrUrl;
 	} else {
-		throw new ScriptException("httpGET requires either a URL string or options object");
+		throw new ScriptException("httpGET requires a URL string, options object, or array for batch");
 	}
 
 	const {
@@ -1556,15 +1606,10 @@ function httpGET(optionsOrUrl) {
 		throw new ScriptException("URL is required");
 	}
 
-	// Only use authentication for requests to the base instance
 	const shouldAuthenticate = useAuthenticated && isBaseInstanceUrl(url);
 	const localHeaders = headers ?? state.defaultHeaders;
 
-	const resp = http.GET(
-		url,
-		localHeaders,
-		shouldAuthenticate
-	);
+	const resp = client.GET(url, localHeaders, shouldAuthenticate);
 
 	if (!resp.isOk) {
 		throwIfCaptcha(resp);
@@ -1576,10 +1621,10 @@ function httpGET(optionsOrUrl) {
 		if (json.errors) {
 			throw new ScriptException(json.errors[0].message);
 		}
-		return json;
+		return [{ isOk: resp.isOk, code: resp.code, body: json }];
 	}
 
-	return resp;
+	return [resp];
 }
 
 /**
@@ -1629,8 +1674,9 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 	const url = `${sourceHost}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
 
+	let obj;
 	try {
-		var obj = httpGET({ url: urlWithParams, parseResponse: true });
+		[{ body: obj }] = httpGET({ url: urlWithParams, parseResponse: true });
 	} catch (e) {
 		log("Failed to get channels", e);
 		return new ChannelPager([], false);
@@ -1672,8 +1718,9 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	const urlWithParams = `${url}${buildQuery(params)}`;
 
+	let obj;
 	try {
-		var obj = httpGET({ url: urlWithParams, useAuthenticated: useAuth, parseResponse: true });
+		[{ body: obj }] = httpGET({ url: urlWithParams, useAuthenticated: useAuth, parseResponse: true });
 	} catch (e) {
 		log("Failed to get videos", e);
 		return new VideoPager([], false);
@@ -1754,8 +1801,9 @@ function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.co
 	// Build video URL internally
 	const videoUrl = addContentUrlHint(`${sourceBaseUrl}/videos/watch/${videoId}`);
 	
+	let obj;
 	try {
-		var obj = httpGET({ url: urlWithParams, parseResponse: true });
+		[{ body: obj }] = httpGET({ url: urlWithParams, parseResponse: true });
 	} catch (e) {
 		log("Failed to get comments", e);
 		return new CommentPager([], false);
@@ -1804,14 +1852,15 @@ function getPlaylistPager(path, params, page, sourceHost = plugin.config.constan
 
 	const url = `${sourceHost}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
-	
+
+	let obj;
 	try {
-		var obj = httpGET({ url: urlWithParams, parseResponse: true });
+		[{ body: obj }] = httpGET({ url: urlWithParams, parseResponse: true });
 	} catch (e) {
 		log("Failed to get playlists", e);
 		return new PlaylistPager([], false);
 	}
-	
+
 	const hasMore = obj.total > (start + count);
 	
 	const playlistResults = obj.data.map(playlist => {
@@ -1851,8 +1900,9 @@ function getHistoryVideoPager(path, params, page) {
 	const url = `${plugin.config.constants.baseUrl}${path}`;
 	const urlWithParams = `${url}${buildQuery(params)}`;
 
+	let obj;
 	try {
-		var obj = httpGET({ url: urlWithParams, useAuthenticated: true, parseResponse: true });
+		[{ body: obj }] = httpGET({ url: urlWithParams, useAuthenticated: true, parseResponse: true });
 	} catch (e) {
 		log("Failed to get user history", e);
 		return new VideoPager([], false);
@@ -2253,12 +2303,25 @@ function getMediaDescriptor(obj) {
 
 	for (const playlist of (obj?.streamingPlaylists ?? [])) {
 
-		hlsOutputSources.push(new HLSSource({
+		const hlsSourceOpts = {
 			name: "HLS",
 			url: playlist.playlistUrl,
 			duration: obj.duration ?? 0,
 			priority: true
-		}));
+		};
+
+		if (IS_IMPERSONATION_AVAILABLE && _settings?.enableBrowserImpersonation) {
+			hlsSourceOpts.requestModifier = {
+				options: {
+					applyAuthClient: "",
+					applyCookieClient: "",
+					applyOtherHeaders: false,
+					impersonateTarget: IMPERSONATION_TARGET
+				}
+			};
+		}
+
+		hlsOutputSources.push(new HLSSource(hlsSourceOpts));
 
 		// exclude transcoded files for now due to some incompatibility issues (no length metadata (invalid duration on android devices) and performance issues loading the files on desktop
 		// those are the same videos used for HLS
