@@ -56,14 +56,14 @@
 	"settings": [
 		{
 			"variable": "homeHeader",
-			"name": "Home Content",
-			"description": "Options for home feed content",
+			"name": "Home Feed",
+			"description": "Source and sorting for the home feed",
 			"type": "Header"
 		},
 		{
 			"variable": "homeContentSourceIndex",
 			"name": "Content Source",
-			"description": "Choose where to load home videos from. 'Current instance' loads videos from your configured PeerTube instance. 'Sepia Search' loads videos from across all indexed PeerTube instances via sepiasearch.org.",
+			"description": "Current instance uses your configured server. Sepia Search aggregates all indexed PeerTube instances.",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -71,22 +71,10 @@
 				"Sepia Search"
 			]
 		},
-
-		{
-			"variable": "searchEngineIndex",
-			"name": "Search Engine",
-			"description": "Choose how to search for PeerTube content. 'Current Instance' searches within the instance you're using and its followed instances. 'Sepia Search' searches across all indexed PeerTube instances via sepiasearch.org.",
-			"type": "Dropdown",
-			"default": "0",
-			"options": [
-				"Current Instance",
-				"Sepia Search"
-			]
-		},
 		{
 			"variable": "homeFeedSortIndex",
 			"name": "Home Feed Sorting",
-			"description": "Choose how to sort videos on the home feed. Note: Best, Trending, and Hot require PeerTube v3.1.0+ (falls back to Newest on older instances)",
+			"description": "Best, Trending, and Hot require PeerTube v3.1.0+ (falls back to Newest on older instances).",
 			"type": "Dropdown",
 			"default": "1",
 			"options": [
@@ -100,9 +88,15 @@
 			]
 		},
 		{
+			"variable": "homeFiltersHeader",
+			"name": "Home Filters",
+			"description": "Filter home feed by category and language. Multiple filters combine with OR logic. Leave empty to disable.",
+			"type": "Header"
+		},
+		{
 			"variable": "mainCategoryIndex",
 			"name": "Home Category Filter 1",
-			"description": "Filter home feed by category. Selecting multiple category filters will show videos from any of the selected categories. Leave empty to disable filtering.",
+			"description": "",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -130,7 +124,7 @@
 		{
 			"variable": "secondCategoryIndex",
 			"name": "Home Category Filter 2",
-			"description": "Filter home feed by category. Selecting multiple category filters will show videos from any of the selected categories. Leave empty to disable filtering.",
+			"description": "",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -158,7 +152,7 @@
 		{
 			"variable": "thirdCategoryIndex",
 			"name": "Home Category Filter 3",
-			"description": "Filter home feed by category. Selecting multiple category filters will show videos from any of the selected categories. Leave empty to disable filtering.",
+			"description": "",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -186,7 +180,7 @@
 		{
 			"variable": "fourthCategoryIndex",
 			"name": "Home Category Filter 4",
-			"description": "Filter home feed by category. Selecting multiple category filters will show videos from any of the selected categories. Leave empty to disable filtering.",
+			"description": "",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -214,7 +208,7 @@
 		{
 			"variable": "fifthCategoryIndex",
 			"name": "Home Category Filter 5",
-			"description": "Filter home feed by category. Selecting multiple category filters will show videos from any of the selected categories. Leave empty to disable filtering.",
+			"description": "",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -242,7 +236,7 @@
 		{
 			"variable": "firstLanguageIndex",
 			"name": "Home Language Filter 1",
-			"description": "Filter home feed by language. Selecting multiple language filters will show videos in any of the selected languages. Leave empty to disable filtering.",
+			"description": "",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -289,7 +283,7 @@
 		{
 			"variable": "secondLanguageIndex",
 			"name": "Home Language Filter 2",
-			"description": "Filter home feed by language. Selecting multiple language filters will show videos in any of the selected languages. Leave empty to disable filtering.",
+			"description": "",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -336,7 +330,7 @@
 		{
 			"variable": "thirdLanguageIndex",
 			"name": "Home Language Filter 3",
-			"description": "Filter home feed by language. Selecting multiple language filters will show videos in any of the selected languages. Leave empty to disable filtering.",
+			"description": "",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -381,6 +375,23 @@
 			]
 		},
 		{
+			"variable": "searchHeader",
+			"name": "Search",
+			"description": "Search engine for finding content",
+			"type": "Header"
+		},
+		{
+			"variable": "searchEngineIndex",
+			"name": "Search Engine",
+			"description": "Current instance searches your server and its followed instances. Sepia Search searches all indexed PeerTube instances.",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"Current instance",
+				"Sepia Search"
+			]
+		},
+		{
 			"variable": "safetyHeader",
 			"name": "Safety",
 			"description": "Content safety and filtering options",
@@ -389,7 +400,7 @@
 		{
 			"variable": "nsfwPolicy",
 			"name": "Policy for sensitive content",
-			"description": "Choose how to handle adult/NSFW content in all feeds and searches. This applies to home feed, search results, channel contents, playlists, and recommendations.",
+			"description": "How to handle NSFW content across all feeds, searches, and recommendations.",
 			"type": "Dropdown",
 			"default": "0",
 			"options": [
@@ -401,20 +412,20 @@
 		{
 			"variable": "allowPlayNsfwContent",
 			"name": "Allow Playing Sensitive Content",
-			"description": "Allow playing of sensitive content. This also applies to deep linking sensitive content.",
+			"description": "Allow playback of sensitive content, including deep-linked videos.",
 			"type": "Boolean",
 			"default": "false"
 		},
 		{
 			"variable": "AnalyticsHeader",
 			"name": "Analytics",
-			"description": "",
+			"description": "Viewing activity reporting",
 			"type": "Header"
 		},
 		{
 			"variable": "submitActivity",
 			"name": "Report Views",
-			"description": "Report viewing activity to PeerTube instances. After a while, the instance will use this information to increase the video's viewer counter.",
+			"description": "Send watch activity to instances to count views.",
 			"type": "Boolean",
 			"default": "true"
 		},
@@ -427,21 +438,21 @@
 		{
 			"variable": "enableBrowserImpersonation",
 			"name": "Browser Impersonation",
-			"description": "When enabled, HTTP requests will impersonate a real browser's TLS fingerprint to bypass bot detection (e.g. Cloudflare). Requires the HttpImp package to be available.",
+			"description": "Impersonate a browser's TLS fingerprint to bypass bot detection (e.g. Cloudflare). Requires HttpImp.",
 			"type": "Boolean",
 			"default": "false"
 		},
 		{
 			"variable": "enableCloudflareCaptcha",
 			"name": "Cloudflare Captcha Support",
-			"description": "When enabled, instances protected by Cloudflare will prompt you to solve a captcha instead of failing silently. This allows access to PeerTube instances behind Cloudflare bot protection.",
+			"description": "Prompt for captcha on Cloudflare-protected instances instead of failing silently.",
 			"type": "Boolean",
 			"default": "false"
 		},
 		{
 			"variable": "enableSearchSuggestions",
 			"name": "Search Suggestions",
-			"description": "When enabled, search suggestions will be fetched from the search API as you type. This makes an API request per keystroke which may increase load on the instance.",
+			"description": "Fetch suggestions from the search API as you type. Makes extra API requests which may increase instance load.",
 			"type": "Boolean",
 			"default": "false"
 		}
