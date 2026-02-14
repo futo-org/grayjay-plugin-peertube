@@ -74,7 +74,7 @@ source.enable = function (conf, settings, saveStateStr) {
 
 	if (!didSaveState) {
 		const [currentInstanceConfig] = http.batch()
-			.GET(`${plugin.config.constants.baseUrl}/api/v1/config`, {})
+			.GET(`${plugin.config.constants.baseUrl}/api/v1/config`, state.defaultHeaders)
 			.execute();
 
 		if (currentInstanceConfig.isOk) {
@@ -622,7 +622,7 @@ source.getUserSubscriptions = function() {
 		const batchRequest = http.batch();
 		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
 			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
-			batchRequest.GET(`${endpointUrl}${buildQuery(pageParams)}`, {}, true);
+			batchRequest.GET(`${endpointUrl}${buildQuery(pageParams)}`, state.defaultHeaders, true);
 		}
 		const batchResponses = batchRequest.execute();
 		
@@ -711,7 +711,7 @@ source.getUserPlaylists = function() {
 	if (remainingPages > 1) {
 		const batch = http.batch();
 		for (let i = 1; i <= remainingPages; i++) {
-			batch.GET(`${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, {}, true);
+			batch.GET(`${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, state.defaultHeaders, true);
 		}
 		batch.execute().forEach(r => {
 			if (r.isOk && r.code === 200) {
@@ -1072,10 +1072,10 @@ source.getContentDetails = function (url) {
 	
 	// Create a batch request for video details, captions, chapters and instance config
 	const [videoDetails, captionsData, chaptersData, instanceConfig] = http.batch()
-		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, {})
-		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`, {})
-		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`, {})
-		.GET(`${sourceBaseUrl}/api/v1/config`, {})
+		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, state.defaultHeaders)
+		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`, state.defaultHeaders)
+		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`, state.defaultHeaders)
+		.GET(`${sourceBaseUrl}/api/v1/config`, state.defaultHeaders)
 		.execute();
 	
 	if (!videoDetails.isOk) {
@@ -1432,6 +1432,7 @@ class PeerTubePlaybackTracker extends PlaybackTracker {
 		}
 
 		http.POST(url, JSON.stringify(body), {
+			...state.defaultHeaders,
 			"Content-Type": "application/json"
 		}, false);
 	}
