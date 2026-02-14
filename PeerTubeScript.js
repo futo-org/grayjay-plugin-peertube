@@ -25,6 +25,9 @@ const URLS = {
 	PEERTUBE_LOGO: "https://plugins.grayjay.app/PeerTube/peertube.png"
 }
 
+const PAGE_SIZE_DEFAULT = 20;
+const PAGE_SIZE_HISTORY = 100;
+
 // Query parameter to flag private/unlisted playlists that require authentication
 // This is added by getUserPlaylists and checked by getPlaylist
 
@@ -1794,7 +1797,7 @@ function buildQuery(params) {
  */
 function getChannelPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
 
-	const count = 20;
+	const count = PAGE_SIZE_DEFAULT;
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count }
 
@@ -1837,7 +1840,7 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
  */
 function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false, cbMap, useAuth = false) {
 
-	const count = 20;
+	const count = PAGE_SIZE_DEFAULT;
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count };
 
@@ -1936,7 +1939,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
  */
 function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
 
-	const count = 20;
+	const count = PAGE_SIZE_DEFAULT;
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count }
 
@@ -1994,7 +1997,7 @@ function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.co
  */
 
 function getPlaylistPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
-	const count = 20;
+	const count = PAGE_SIZE_DEFAULT;
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count };
 
@@ -2048,7 +2051,7 @@ function getPlaylistPager(path, params, page, sourceHost = plugin.config.constan
  * @returns {PeerTubeHistoryVideoPager} Pager for history video results
  */
 function getHistoryVideoPager(path, params, page) {
-	const count = 100;
+	const count = PAGE_SIZE_HISTORY;
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count };
 
