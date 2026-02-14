@@ -5,7 +5,7 @@ variables:
   PLUGIN_NAME: PeerTube
   ICON_FILE: peertube.png
   SCRIPT_FILE: PeerTubeScript.js 
-  CONFIG_FILE: PeerTubeConfig.js
+  CONFIG_FILE: PeerTubeConfig.json
 
 deploy-master:
   stage: deploy
