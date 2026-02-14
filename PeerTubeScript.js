@@ -51,7 +51,8 @@ let _settings = {};
 let state = {
 	serverVersion: '',
 	isSearchEngineSepiaSearch: false,
-	isHomeContentSepiaSearch: false,
+	homeSourceCurrentInstance: true,
+	homeSourceSepiaSearch: false,
 	defaultHeaders: {
 		'User-Agent': getUserAgent()
 	}
@@ -63,7 +64,6 @@ let INDEX_INSTANCES = {
 
 let SEARCH_ENGINE_OPTIONS = [];
 
-let HOME_CONTENT_SOURCE_OPTIONS = [];
 
 if (IS_IMPERSONATION_AVAILABLE) {
 	const httpImpClient = httpimp.getDefaultClient(true);
@@ -83,7 +83,6 @@ source.enable = function (conf, settings, saveStateStr) {
 	_settings = settings ?? {};
 
 	SEARCH_ENGINE_OPTIONS = loadOptionsForSetting('searchEngineIndex');
-	HOME_CONTENT_SOURCE_OPTIONS = loadOptionsForSetting('homeContentSourceIndex');
 	let didSaveState = false;
 
 	if (IS_TESTING && !plugin?.config?.constants?.baseUrl) {
@@ -107,7 +106,12 @@ source.enable = function (conf, settings, saveStateStr) {
 
 	// Always recalculate these flags based on current settings
 	state.isSearchEngineSepiaSearch = SEARCH_ENGINE_OPTIONS[parseInt(_settings.searchEngineIndex)] == 'Sepia Search'
-	state.isHomeContentSepiaSearch = HOME_CONTENT_SOURCE_OPTIONS[parseInt(_settings.homeContentSourceIndex)] == 'Sepia Search'
+	state.homeSourceCurrentInstance = _settings.homeSourceCurrentInstance !== false && _settings.homeSourceCurrentInstance !== "false";
+	state.homeSourceSepiaSearch = _settings.homeSourceSepiaSearch === true || _settings.homeSourceSepiaSearch === "true";
+	// Fallback: if neither is enabled, default to current instance
+	if (!state.homeSourceCurrentInstance && !state.homeSourceSepiaSearch) {
+		state.homeSourceCurrentInstance = true;
+	}
 
 	if (!didSaveState) {
 		try {
@@ -153,9 +157,6 @@ source.getHome = function () {
 		sort = '-publishedAt';
 	}
 
-	// Determine source host and parameters based on home content source setting
-	let sourceHost = '';
-	let path = '';
 	const params = { sort };
 
 
@@ -186,52 +187,49 @@ source.getHome = function () {
 		.filter(Boolean);
 
 
-	if (state.isHomeContentSepiaSearch) {
-		// Use Sepia Search for home content
-		sourceHost = 'https://sepiasearch.org';
-		path = '/api/v1/search/videos';
-		params.resultType = 'videos';
-
-		// Apply category filtering for Sepia Search
-		if (categoryIds.length > 0) {
-			params.categoryOneOf = categoryIds;
-		}
-
-		// Apply language filtering for Sepia Search
-		if (languageCodes.length > 0) {
-			params.languageOneOf = languageCodes;
-		}
-
-		// Map PeerTube sort options to Sepia Search equivalents
-		const sepiaSearchSortMap = {
-			'best': 'match',           // Best algorithm -> relevance match
-			'-publishedAt': '-createdAt', // Newest -> most recent
-			'publishedAt': 'createdAt',   // Oldest -> least recent
-			'-views': '-views',        // Most Views -> same
-			'-likes': '-likes',        // Most Likes -> same
-			'-trending': '-views',     // Trending -> most views (closest equivalent)
-			'-hot': '-views'           // Hot -> most views (closest equivalent)
-		};
-
-		params.sort = sepiaSearchSortMap[sort] || 'match';
-	} else {
-		// Use current instance for home content
-		sourceHost = plugin.config.constants.baseUrl;
-		path = '/api/v1/videos';
-
-		// Apply category filtering for current instance
-		if (categoryIds.length > 0) {
-			params.categoryOneOf = categoryIds;
-		}
-
-		// Apply language filtering for current instance
-		if (languageCodes.length > 0) {
-			params.languageOneOf = languageCodes;
-		}
+	// Apply category and language filters (shared across all sources)
+	if (categoryIds.length > 0) {
+		params.categoryOneOf = categoryIds;
+	}
+	if (languageCodes.length > 0) {
+		params.languageOneOf = languageCodes;
 	}
 
-	// The getVideoPager will handle API errors if the sort option is not supported
-	return getVideoPager(path, params, 0, sourceHost, state.isHomeContentSepiaSearch);
+	// Map PeerTube sort options to Sepia Search equivalents
+	const sepiaSearchSortMap = {
+		'best': 'match',           // Best algorithm -> relevance match
+		'-publishedAt': '-createdAt', // Newest -> most recent
+		'publishedAt': 'createdAt',   // Oldest -> least recent
+		'-views': '-views',        // Most Views -> same
+		'-likes': '-likes',        // Most Likes -> same
+		'-trending': '-views',     // Trending -> most views (closest equivalent)
+		'-hot': '-views'           // Hot -> most views (closest equivalent)
+	};
+
+	if (state.homeSourceCurrentInstance && state.homeSourceSepiaSearch) {
+		// Both sources: fetch in parallel, merge, deduplicate
+		const localContext = {
+			path: '/api/v1/videos',
+			params: { ...params },
+			page: 0,
+			sourceHost: plugin.config.constants.baseUrl
+		};
+		const sepiaContext = {
+			path: '/api/v1/search/videos',
+			params: { ...params, resultType: 'videos', sort: sepiaSearchSortMap[sort] || 'match' },
+			page: 0,
+			sourceHost: 'https://sepiasearch.org'
+		};
+		return getMixedVideoPager(localContext, sepiaContext);
+	} else if (state.homeSourceSepiaSearch) {
+		// Sepia Search only
+		params.resultType = 'videos';
+		params.sort = sepiaSearchSortMap[sort] || 'match';
+		return getVideoPager('/api/v1/search/videos', params, 0, 'https://sepiasearch.org', true);
+	} else {
+		// Current instance only (default)
+		return getVideoPager('/api/v1/videos', params, 0, plugin.config.constants.baseUrl, false);
+	}
 };
 
 source.searchSuggestions = function (query) {
@@ -1494,6 +1492,18 @@ class PeerTubeVideoPager extends VideoPager {
 	}
 }
 
+class PeerTubeMixedVideoPager extends VideoPager {
+	constructor(results, hasMore, localContext, sepiaContext) {
+		super(results, hasMore, { localContext, sepiaContext });
+	}
+
+	nextPage() {
+		const nextLocal = { ...this.context.localContext, page: (this.context.localContext.page ?? 0) + 1 };
+		const nextSepia = { ...this.context.sepiaContext, page: (this.context.sepiaContext.page ?? 0) + 1 };
+		return getMixedVideoPager(nextLocal, nextSepia);
+	}
+}
+
 /**
  * Paginated channel results from a PeerTube instance
  * @extends ChannelPager
@@ -1593,6 +1603,53 @@ class PeerTubeHistoryVideoPager extends VideoPager {
  * Returns the appropriate HTTP client based on impersonation settings
  * @returns {Object} The HTTP client (httpimp if impersonation is enabled, otherwise http)
  */
+function transformVideoResults(data, isSearch, sourceHost) {
+	const nsfwPolicy = getNSFWPolicy();
+
+	return data
+		.filter(Boolean)
+		.map(v => {
+			const baseUrl = [
+				v.url,
+				v.embedUrl,
+				v.previewUrl,
+				v?.thumbnailUrl,
+				v?.account?.url,
+				v?.channel?.url
+			].filter(Boolean).map(getBaseUrl).find(Boolean);
+
+			const contentUrl = addContentUrlHint(v.url || `${baseUrl}/videos/watch/${v.uuid}`);
+			const instanceBaseUrl = isSearch ? baseUrl : sourceHost;
+			const channelUrl = addChannelUrlHint(v.channel.url);
+
+			const isNSFW = v.nsfw === true;
+			let thumbnails;
+
+			if (isNSFW && nsfwPolicy === "blur") {
+				thumbnails = new Thumbnails([]);
+			} else {
+				thumbnails = new Thumbnails([new Thumbnail(`${instanceBaseUrl}${v.thumbnailPath}`, 0)]);
+			}
+
+			return new PlatformVideo({
+				id: new PlatformID(PLATFORM, v.uuid, config.id),
+				name: v.name ?? "",
+				thumbnails: thumbnails,
+				author: new PlatformAuthorLink(
+					new PlatformID(PLATFORM, v.channel.name, config.id),
+					v.channel.displayName,
+					channelUrl,
+					getAvatarUrl(v, instanceBaseUrl)
+				),
+				datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
+				duration: v.duration,
+				viewCount: v.isLive ? (v.viewers ?? v.views) : v.views,
+				url: contentUrl,
+				isLive: v.isLive
+			});
+		});
+}
+
 function getHttpClient() {
 	return (IS_IMPERSONATION_AVAILABLE && _settings?.enableBrowserImpersonation) ? httpimp : http;
 }
@@ -1747,7 +1804,7 @@ function httpGET(optionsOrUrl) {
 			const isString = typeof req === 'string';
 			const url = isString ? req : req.url;
 			const headers = (isString ? null : req.headers) ?? state.defaultHeaders;
-			const useAuth = !isString && req.useAuthenticated && isBaseInstanceUrl(url);
+			const useAuth = !!(req.useAuthenticated && isBaseInstanceUrl(url));
 			parseFlags.push(!isString && !!req.parseResponse);
 			batch.GET(url, headers, useAuth);
 		}
@@ -1936,59 +1993,89 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 		obj.data = obj.data.map(cbMap);
 	}
 
-	const nsfwPolicy = getNSFWPolicy();
-
-	const contentResultList = obj.data
-	.filter(Boolean)//playlists may contain null values for private videos
-	.map(v => {
-
-		const baseUrl = [
-			v.url,
-			v.embedUrl,
-			v.previewUrl,
-			v?.thumbnailUrl,
-			v?.account?.url,
-			v?.channel?.url
-		].filter(Boolean).map(getBaseUrl).find(Boolean);
-
-		//Some older instance versions such as 3.0.0, may not contain the url property
-		// Add URL hints using utility functions
-		const contentUrl = addContentUrlHint(v.url || `${baseUrl}/videos/watch/${v.uuid}`);
-		const instanceBaseUrl = isSearch ? baseUrl : sourceHost;
-		const channelUrl = addChannelUrlHint(v.channel.url);
-
-		// Handle NSFW content based on policy
-		const isNSFW = v.nsfw === true;
-		let thumbnails;
-
-		if (isNSFW && nsfwPolicy === "blur") {
-			// Create empty thumbnail for NSFW content
-			thumbnails = new Thumbnails([]);
-		} else {
-			// Normal thumbnail
-			thumbnails = new Thumbnails([new Thumbnail(`${instanceBaseUrl}${v.thumbnailPath}`, 0)]);
-		}
-
-		return new PlatformVideo({
-			id: new PlatformID(PLATFORM, v.uuid, config.id),
-			name: v.name ?? "",
-			thumbnails: thumbnails,
-			author: new PlatformAuthorLink(
-				new PlatformID(PLATFORM, v.channel.name, config.id),
-				v.channel.displayName,
-				channelUrl,
-				getAvatarUrl(v, instanceBaseUrl)
-			),
-			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
-			duration: v.duration,
-			viewCount: v.isLive ? (v.viewers ?? v.views) : v.views,
-			url: contentUrl,
-			isLive: v.isLive
-		});
-
-	});
+	const contentResultList = transformVideoResults(obj.data, isSearch, sourceHost);
 
 	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap, useAuth);
+}
+
+function getMixedVideoPager(localContext, sepiaContext) {
+	const count = PAGE_SIZE_DEFAULT;
+	const localStart = (localContext.page ?? 0) * count;
+	const sepiaStart = (sepiaContext.page ?? 0) * count;
+
+	const localParams = { ...localContext.params, start: localStart, count };
+	const sepiaParams = { ...sepiaContext.params, start: sepiaStart, count };
+
+	// Apply NSFW filtering
+	const nsfwPolicy = getNSFWPolicy();
+	if (!localParams.hasOwnProperty('nsfw')) {
+		localParams.nsfw = nsfwPolicy === "do_not_list" ? 'false' : 'both';
+	}
+	if (!sepiaParams.hasOwnProperty('nsfw')) {
+		sepiaParams.nsfw = nsfwPolicy === "do_not_list" ? 'false' : 'both';
+	}
+
+	const localUrl = `${localContext.sourceHost}${localContext.path}?${buildQuery(localParams)}`;
+	const sepiaUrl = `${sepiaContext.sourceHost}${sepiaContext.path}?${buildQuery(sepiaParams)}`;
+
+	let localData = [];
+	let sepiaData = [];
+	let localHasMore = false;
+	let sepiaHasMore = false;
+
+	try {
+		const [localResp, sepiaResp] = httpGET([
+			{ url: localUrl, parseResponse: true },
+			{ url: sepiaUrl, parseResponse: true }
+		]);
+
+		if (localResp.isOk && localResp.body?.data) {
+			localData = localResp.body.data;
+			localHasMore = localResp.body.total > (localStart + count);
+		}
+		if (sepiaResp.isOk && sepiaResp.body?.data) {
+			sepiaData = sepiaResp.body.data;
+			sepiaHasMore = sepiaResp.body.total > (sepiaStart + count);
+		}
+	} catch (e) {
+		log("Failed to get mixed videos", e);
+		return new VideoPager([], false);
+	}
+
+	// Transform both sets
+	const localResults = transformVideoResults(localData, false, localContext.sourceHost);
+	const sepiaResults = transformVideoResults(sepiaData, true, sepiaContext.sourceHost);
+
+	// Deduplicate by UUID (prefer local version)
+	const seen = new Set();
+	const merged = [];
+
+	for (const video of [...localResults, ...sepiaResults]) {
+		const uuid = video.id.value;
+		if (!seen.has(uuid)) {
+			seen.add(uuid);
+			merged.push(video);
+		}
+	}
+
+	// Sort merged results according to the user's chosen sort order
+	const sort = localContext.params.sort;
+	if (sort === '-publishedAt' || sort === '-createdAt') {
+		merged.sort((a, b) => b.datetime - a.datetime);
+	} else if (sort === 'publishedAt' || sort === 'createdAt') {
+		merged.sort((a, b) => a.datetime - b.datetime);
+	} else if (sort === '-views') {
+		merged.sort((a, b) => b.viewCount - a.viewCount);
+	} else if (sort === '-likes') {
+		// likes not available on PlatformVideo, fall back to newest
+		merged.sort((a, b) => b.datetime - a.datetime);
+	} else {
+		// best, trending, hot are algorithmic — fall back to newest
+		merged.sort((a, b) => b.datetime - a.datetime);
+	}
+
+	const hasMore = localHasMore || sepiaHasMore;
+	return new PeerTubeMixedVideoPager(merged, hasMore, localContext, sepiaContext);
 }
 
 /**
