@@ -983,6 +983,24 @@ source.isContentDetailsUrl = function (url) {
 
 
 /**
+ * Returns the full video description, preferring the /description endpoint response
+ * over the main video detail response which may be truncated on older instances.
+ * @param {Object} descriptionResponse - HTTP response from /api/v1/videos/{id}/description
+ * @param {string} fallback - Description from the main video detail response
+ * @returns {string} The full description or the fallback
+ */
+function getFullDescription(descriptionResponse, fallback) {
+	if (!descriptionResponse || !descriptionResponse.isOk) return fallback;
+	try {
+		const data = JSON.parse(descriptionResponse.body);
+		if (data?.description) return data.description;
+	} catch (e) {
+		// ignore
+	}
+	return fallback;
+}
+
+/**
  * Processes captions data from API response into GrayJay subtitle format
  * @param {Object} subtitlesResponse - HTTP response containing captions data
  * @returns {Array} - Array of subtitle objects or empty array if none available
@@ -1052,11 +1070,12 @@ source.getContentDetails = function (url) {
 
 	const sourceBaseUrl = getBaseUrl(url);
 	
-	// Create a batch request for both video details and captions
-	const [videoDetails, captionsData, chaptersData] = http.batch()
+	// Create a batch request for video details, captions, chapters and instance config
+	const [videoDetails, captionsData, chaptersData, instanceConfig] = http.batch()
 		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, {})
 		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`, {})
 		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`, {})
+		.GET(`${sourceBaseUrl}/api/v1/config`, {})
 		.execute();
 	
 	if (!videoDetails.isOk) {
@@ -1084,6 +1103,24 @@ source.getContentDetails = function (url) {
 	// Process subtitles data
 	const subtitles = processSubtitlesData(captionsData);
 
+	// Parse source instance version for feature detection
+	const sourceInstanceVersion = getInstanceVersion(instanceConfig);
+
+	// PeerTube < v5.0.0 truncates description to 250 chars in /api/v1/videos/{id}.
+	// Full description requires /api/v1/videos/{id}/description (deprecated in v5.0.0+).
+	// See: https://github.com/Chocobozzz/PeerTube/releases/tag/v5.0.0
+	let fullDescription = obj.description;
+	if (!ServerInstanceVersionIsSameOrNewer(sourceInstanceVersion, '5.0.0')
+		&& fullDescription && fullDescription.length >= 250 && fullDescription.endsWith('...')) {
+		try {
+			const descId = obj.uuid || videoId;
+			const descResp = httpGET(`${sourceBaseUrl}/api/v1/videos/${descId}/description`);
+			fullDescription = getFullDescription(descResp, fullDescription);
+		} catch (e) {
+			log("Failed to fetch full description", e);
+		}
+	}
+
 	const result = new PlatformVideoDetails({
 		id: new PlatformID(PLATFORM, obj.uuid, config.id),
 		name: obj.name,
@@ -1102,7 +1139,7 @@ source.getContentDetails = function (url) {
 		viewCount: obj.isLive ? (obj.viewers ?? obj.views) : obj.views,
 		url: contentUrl,
 		isLive: obj.isLive,
-		description: obj.description,
+		description: fullDescription,
 		video: getMediaDescriptor(obj),
 		subtitles: subtitles,
 		rating: new RatingLikesDislikes(
@@ -1887,6 +1924,20 @@ function extractVersionParts(version) {
 	}
 
 	return parts;
+}
+
+/**
+ * Extracts the server version string from an instance config API response.
+ * @param {Object} configResponse - HTTP response from /api/v1/config
+ * @returns {string|null} The server version string or null
+ */
+function getInstanceVersion(configResponse) {
+	if (!configResponse || !configResponse.isOk) return null;
+	try {
+		return JSON.parse(configResponse.body).serverVersion ?? null;
+	} catch (e) {
+		return null;
+	}
 }
 
 function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {

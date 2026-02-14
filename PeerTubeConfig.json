@@ -449,6 +449,7 @@
 			"Improvement: Add search for contents within a channel;",
 			"Improvement: Add channel banner image support for channels on PeerTube v6.0.0+ instances;",
 			"Improvement: Update known instances from https://instances.joinpeertube.org, https://api.fediverse.observer/, and https://api.fedidb.org/",
+			"Fix: Handle older instances thay truncate video descriptions at 250 characters and need an adition request;",
 			"Fix: Viewer count for livestreams;"
 		],
 		"24": [
