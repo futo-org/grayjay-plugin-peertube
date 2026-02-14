@@ -531,19 +531,5 @@
 			"Improve support for older peertube server versions;",
 			"Fix bugs with channel avatars and video thumbnails in some peertube server versions;"
 		]
-	},
-	"testing": {
-		"GetContentDetails": {
-			"urls": [
-				"https://peertube.futo.org/videos/watch/7a7eb334-60c7-411f-bcee-3ef1cdfe9169?isPeertubeContent=1",
-				"https://peertube.futo.org/videos/watch/9364374d-96fb-46cd-940c-ce9ee94da6fd?isPeertubeContent=1",
-				"https://peertube.futo.org/videos/watch/80e7f60f-a3ad-4af4-9453-fc06fc50cf5a?isPeertubeContent=1"
-			]
-		},
-		"GetChannel": {
-			"urls": [
-				"https://peertube.futo.org/video-channels/futo?isPeertubeChannel=1"
-			]
-		}
 	}
 }
