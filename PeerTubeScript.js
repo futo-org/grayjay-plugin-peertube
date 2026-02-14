@@ -626,7 +626,7 @@ source.getUserSubscriptions = function() {
 	
 	const initialParams = { start: 0, count: itemsPerPage };
 	const endpointUrl = `${plugin.config.constants.baseUrl}/api/v1/users/me/subscriptions`;
-	const initialRequestUrl = `${endpointUrl}${buildQuery(initialParams)}`;
+	const initialRequestUrl = `${endpointUrl}?${buildQuery(initialParams)}`;
 	
 	let initialResponseBody;
 	try {
@@ -654,7 +654,7 @@ source.getUserSubscriptions = function() {
 		const batchUrls = [];
 		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
 			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
-			batchUrls.push({ url: `${endpointUrl}${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
+			batchUrls.push({ url: `${endpointUrl}?${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
 		}
 		const batchResponses = httpGET(batchUrls);
 
@@ -671,7 +671,7 @@ source.getUserSubscriptions = function() {
 		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
 			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
 			try {
-				const [{ body: pageResponseBody }] = httpGET({ url: `${endpointUrl}${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
+				const [{ body: pageResponseBody }] = httpGET({ url: `${endpointUrl}?${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
 				if (pageResponseBody.data) {
 					pageResponseBody.data.forEach(subscription => {
 						if (subscription.url) subscriptionUrls.push(subscription.url);
@@ -725,7 +725,7 @@ source.getUserPlaylists = function() {
 
 	let initialResponseBody;
 	try {
-		[{ body: initialResponseBody }] = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: 0, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
+		[{ body: initialResponseBody }] = httpGET({ url: `${endpointUrl}?${buildQuery({ ...baseParams, start: 0, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
 	} catch (e) {
 		return [];
 	}
@@ -744,7 +744,7 @@ source.getUserPlaylists = function() {
 	if (remainingPages > 1) {
 		const batchUrls = [];
 		for (let i = 1; i <= remainingPages; i++) {
-			batchUrls.push({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
+			batchUrls.push({ url: `${endpointUrl}?${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
 		}
 		httpGET(batchUrls).forEach(r => {
 			if (r.isOk && r.code === 200) {
@@ -759,7 +759,7 @@ source.getUserPlaylists = function() {
 	} else {
 		for (let i = 1; i <= remainingPages; i++) {
 			try {
-				const [{ body: { data } }] = httpGET({ url: `${endpointUrl}${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
+				const [{ body: { data } }] = httpGET({ url: `${endpointUrl}?${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
 				if (data) {
 					data.forEach(p => {
 						const url = buildPlaylistUrl(p);
@@ -932,9 +932,10 @@ source.getPlaylist = function(url) {
 	const sourceBaseUrl = getBaseUrl(cleanUrl);
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-playlists/${playlistId}`;
 	
+	let playlist;
 	try {
 		// Only use auth for private playlists from the base instance
-		const [{ body: playlist }] = httpGET({ url: urlWithParams, useAuthenticated: requiresAuth, parseResponse: true });
+		[{ body: playlist }] = httpGET({ url: urlWithParams, useAuthenticated: requiresAuth, parseResponse: true });
 	} catch (e) {
 		log("Failed to get playlist", e);
 		return null;
@@ -1669,9 +1670,10 @@ function httpGET(optionsOrUrl) {
 }
 
 /**
- * Build a query
+ * Build a query string from parameters (without leading '?').
+ * Callers are responsible for prefixing with '?'.
  * @param {{[key: string]: any}} params Query params
- * @returns {String} Query string
+ * @returns {string} Query string, e.g. "key=val&key2=val2" or ""
  */
 
 function buildQuery(params) {
@@ -1704,7 +1706,7 @@ function buildQuery(params) {
 		}
 	}
 
-	return (query && query.length > 0) ? `?${query}` : "";
+	return (query && query.length > 0) ? query : "";
 }
 
 function getChannelPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
@@ -1714,7 +1716,7 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 	params = { ...params, start, count }
 
 	const url = `${sourceHost}${path}`;
-	const urlWithParams = `${url}${buildQuery(params)}`;
+	const urlWithParams = `${url}?${buildQuery(params)}`;
 
 	let obj;
 	try {
@@ -1758,7 +1760,7 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 
 	const url = `${sourceHost}${path}`;
 
-	const urlWithParams = `${url}${buildQuery(params)}`;
+	const urlWithParams = `${url}?${buildQuery(params)}`;
 
 	let obj;
 	try {
@@ -1774,6 +1776,8 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 	if (typeof cbMap === 'function') {
 		obj.data = obj.data.map(cbMap);
 	}
+
+	const nsfwPolicy = getNSFWPolicy();
 
 	const contentResultList = obj.data
 	.filter(Boolean)//playlists may contain null values for private videos
@@ -1795,7 +1799,6 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 		const channelUrl = addChannelUrlHint(v.channel.url);
 
 		// Handle NSFW content based on policy
-		const nsfwPolicy = getNSFWPolicy();
 		const isNSFW = v.nsfw === true;
 		let thumbnails;
 
@@ -1838,7 +1841,7 @@ function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.co
 	// Build API URL internally
 	const apiPath = `/api/v1/videos/${videoId}/comment-threads`;
 	const apiUrl = `${sourceBaseUrl}${apiPath}`;
-	const urlWithParams = `${apiUrl}${buildQuery(params)}`;
+	const urlWithParams = `${apiUrl}?${buildQuery(params)}`;
 	
 	// Build video URL internally
 	const videoUrl = addContentUrlHint(`${sourceBaseUrl}/videos/watch/${videoId}`);
@@ -1894,7 +1897,7 @@ function getPlaylistPager(path, params, page, sourceHost = plugin.config.constan
 	params = { ...params, start, count };
 
 	const url = `${sourceHost}${path}`;
-	const urlWithParams = `${url}${buildQuery(params)}`;
+	const urlWithParams = `${url}?${buildQuery(params)}`;
 
 	let obj;
 	try {
@@ -1941,7 +1944,7 @@ function getHistoryVideoPager(path, params, page) {
 	params = { ...params, start, count };
 
 	const url = `${plugin.config.constants.baseUrl}${path}`;
-	const urlWithParams = `${url}${buildQuery(params)}`;
+	const urlWithParams = `${url}?${buildQuery(params)}`;
 
 	let obj;
 	try {
@@ -1950,6 +1953,8 @@ function getHistoryVideoPager(path, params, page) {
 		log("Failed to get user history", e);
 		return new VideoPager([], false);
 	}
+
+	const nsfwPolicy = getNSFWPolicy();
 
 	const results = obj.data.map(video => {
 		const sourceHost = plugin.config.constants.baseUrl;
@@ -1963,7 +1968,6 @@ function getHistoryVideoPager(path, params, page) {
 		const contentUrl = addContentUrlHint(video.url || `${baseUrl}/videos/watch/${video.uuid}`);
 		const channelUrl = addChannelUrlHint(video.channel.url);
 		
-		const nsfwPolicy = getNSFWPolicy();
 		const isNSFW = video.nsfw === true;
 		let thumbnails;
 
