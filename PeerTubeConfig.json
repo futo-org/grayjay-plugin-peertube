@@ -7,47 +7,495 @@
 	"sourceUrl": "https://plugins.grayjay.app/PeerTube/PeerTubeConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/peertube",
 	"scriptUrl": "./PeerTubeScript.js",
-	"version": 24,
+	"version": 25,
 	"iconUrl": "./peertube.png",
 	"id": "1c291164-294c-4c2d-800d-7bc6d31d0019",
-	
 	"scriptSignature": "",
 	"scriptPublicKey": "",
 	"packages": ["Http"],
-	
+	"packagesOptional": ["HttpImp"],
 	"allowEval": false,
 	"allowUrls": [
 		"everywhere"
 	],
+	"constants": {
+		"baseUrl": "https://peertube.futo.org"
+	},
+	"authentication": {
+		"loginUrl": "https://peertube.futo.org/login",
+		"completionUrl": "https://peertube.futo.org/api/v1/users/me?*",
+		"headersToFind": [
+			"Authorization"
+		],
+		"userAgent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36"
+	},
+	"authenticationDesktop": {
+		"loginUrl": "https://peertube.futo.org/login",
+		"completionUrl": "https://peertube.futo.org/api/v1/users/me?*",
+		"headersToFind": [
+			"Authorization"
+		],
+		"userAgent": null,
+		"useMobileEmulation": false
+	},
+	"captcha": {
+		"userAgent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36",
+		"captchaUrl": null,
+		"cookiesToFind": [
+			"cf_clearance"
+		]
+	},
+	"captchaDesktop": {
+		"captchaUrl": null,
+		"cookiesToFind": [
+			"cf_clearance"
+		],
+		"userAgent": null,
+		"useMobileEmulation": false
+	},
+	"settings": [
+		{
+			"variable": "homeHeader",
+			"name": "Home Feed",
+			"description": "Source and sorting for the home feed",
+			"type": "Header"
+		},
+		{
+			"variable": "homeSourceCurrentInstance",
+			"name": "Current Instance",
+			"description": "Include videos from your configured PeerTube instance.",
+			"type": "Boolean",
+			"default": "true"
+		},
+		{
+			"variable": "homeSourceSepiaSearch",
+			"name": "Sepia Search",
+			"description": "Include videos from all indexed PeerTube instances via sepiasearch.org.",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
+			"variable": "homeFeedSortIndex",
+			"name": "Home Feed Sorting",
+			"description": "Best, Trending, and Hot require PeerTube v3.1.0+ (falls back to Newest on older instances).",
+			"type": "Dropdown",
+			"default": "1",
+			"options": [
+				"Best (Algorithm)",
+				"Newest",
+				"Oldest",
+				"Most Views",
+				"Most Likes",
+				"Trending",
+				"Hot"
+			]
+		},
+		{
+			"variable": "homeFiltersHeader",
+			"name": "Home Filters",
+			"description": "Filter home feed by category and language. Multiple filters combine with OR logic. Leave empty to disable.",
+			"type": "Header"
+		},
+		{
+			"variable": "mainCategoryIndex",
+			"name": "Home Category Filter 1",
+			"description": "",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"",
+				"Music",
+				"Films",
+				"Vehicles",
+				"Art",
+				"Sports",
+				"Travels",
+				"Gaming",
+				"People",
+				"Comedy",
+				"Entertainment",
+				"News & Politics",
+				"How To",
+				"Education",
+				"Activism",
+				"Science & Technology",
+				"Animals",
+				"Kids",
+				"Food"
+			]
+		},
+		{
+			"variable": "secondCategoryIndex",
+			"name": "Home Category Filter 2",
+			"description": "",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"",
+				"Music",
+				"Films",
+				"Vehicles",
+				"Art",
+				"Sports",
+				"Travels",
+				"Gaming",
+				"People",
+				"Comedy",
+				"Entertainment",
+				"News & Politics",
+				"How To",
+				"Education",
+				"Activism",
+				"Science & Technology",
+				"Animals",
+				"Kids",
+				"Food"
+			]
+		},
+		{
+			"variable": "thirdCategoryIndex",
+			"name": "Home Category Filter 3",
+			"description": "",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"",
+				"Music",
+				"Films",
+				"Vehicles",
+				"Art",
+				"Sports",
+				"Travels",
+				"Gaming",
+				"People",
+				"Comedy",
+				"Entertainment",
+				"News & Politics",
+				"How To",
+				"Education",
+				"Activism",
+				"Science & Technology",
+				"Animals",
+				"Kids",
+				"Food"
+			]
+		},
+		{
+			"variable": "fourthCategoryIndex",
+			"name": "Home Category Filter 4",
+			"description": "",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"",
+				"Music",
+				"Films",
+				"Vehicles",
+				"Art",
+				"Sports",
+				"Travels",
+				"Gaming",
+				"People",
+				"Comedy",
+				"Entertainment",
+				"News & Politics",
+				"How To",
+				"Education",
+				"Activism",
+				"Science & Technology",
+				"Animals",
+				"Kids",
+				"Food"
+			]
+		},
+		{
+			"variable": "fifthCategoryIndex",
+			"name": "Home Category Filter 5",
+			"description": "",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"",
+				"Music",
+				"Films",
+				"Vehicles",
+				"Art",
+				"Sports",
+				"Travels",
+				"Gaming",
+				"People",
+				"Comedy",
+				"Entertainment",
+				"News & Politics",
+				"How To",
+				"Education",
+				"Activism",
+				"Science & Technology",
+				"Animals",
+				"Kids",
+				"Food"
+			]
+		},
+		{
+			"variable": "firstLanguageIndex",
+			"name": "Home Language Filter 1",
+			"description": "",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"",
+				"English",
+				"Français",
+				"العربية",
+				"Català",
+				"Čeština",
+				"Deutsch",
+				"ελληνικά",
+				"Esperanto",
+				"Español",
+				"Euskara",
+				"فارسی",
+				"Suomi",
+				"Gàidhlig",
+				"Galego",
+				"Hrvatski",
+				"Magyar",
+				"Íslenska",
+				"Italiano",
+				"日本語",
+				"Taqbaylit",
+				"Nederlands",
+				"Norsk",
+				"Occitan",
+				"Polski",
+				"Português (Brasil)",
+				"Português (Portugal)",
+				"Pусский",
+				"Slovenčina",
+				"Shqip",
+				"Svenska",
+				"ไทย",
+				"Toki Pona",
+				"Türkçe",
+				"украї́нська мо́ва",
+				"Tiếng Việt",
+				"简体中文（中国）",
+				"繁體中文（台灣）"
+			]
+		},
+		{
+			"variable": "secondLanguageIndex",
+			"name": "Home Language Filter 2",
+			"description": "",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"",
+				"English",
+				"Français",
+				"العربية",
+				"Català",
+				"Čeština",
+				"Deutsch",
+				"ελληνικά",
+				"Esperanto",
+				"Español",
+				"Euskara",
+				"فارسی",
+				"Suomi",
+				"Gàidhlig",
+				"Galego",
+				"Hrvatski",
+				"Magyar",
+				"Íslenska",
+				"Italiano",
+				"日本語",
+				"Taqbaylit",
+				"Nederlands",
+				"Norsk",
+				"Occitan",
+				"Polski",
+				"Português (Brasil)",
+				"Português (Portugal)",
+				"Pусский",
+				"Slovenčina",
+				"Shqip",
+				"Svenska",
+				"ไทย",
+				"Toki Pona",
+				"Türkçe",
+				"украї́нська мо́ва",
+				"Tiếng Việt",
+				"简体中文（中国）",
+				"繁體中文（台灣）"
+			]
+		},
+		{
+			"variable": "thirdLanguageIndex",
+			"name": "Home Language Filter 3",
+			"description": "",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"",
+				"English",
+				"Français",
+				"العربية",
+				"Català",
+				"Čeština",
+				"Deutsch",
+				"ελληνικά",
+				"Esperanto",
+				"Español",
+				"Euskara",
+				"فارسی",
+				"Suomi",
+				"Gàidhlig",
+				"Galego",
+				"Hrvatski",
+				"Magyar",
+				"Íslenska",
+				"Italiano",
+				"日本語",
+				"Taqbaylit",
+				"Nederlands",
+				"Norsk",
+				"Occitan",
+				"Polski",
+				"Português (Brasil)",
+				"Português (Portugal)",
+				"Pусский",
+				"Slovenčina",
+				"Shqip",
+				"Svenska",
+				"ไทย",
+				"Toki Pona",
+				"Türkçe",
+				"украї́нська мо́ва",
+				"Tiếng Việt",
+				"简体中文（中国）",
+				"繁體中文（台灣）"
+			]
+		},
+		{
+			"variable": "searchHeader",
+			"name": "Search",
+			"description": "Search engine for finding content.",
+			"type": "Header"
+		},
+		{
+			"variable": "searchCurrentInstance",
+			"name": "Current Instance",
+			"description": "Search your server and its followed instances.",
+			"type": "Boolean",
+			"default": "true"
+		},
+		{
+			"variable": "searchSepiaSearch",
+			"name": "Sepia Search",
+			"description": "Search all indexed PeerTube instances via sepiasearch.org.",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
+			"variable": "safetyHeader",
+			"name": "Safety",
+			"description": "Content safety and filtering options.",
+			"type": "Header"
+		},
+		{
+			"variable": "nsfwPolicy",
+			"name": "Policy for sensitive content",
+			"description": "How to handle NSFW content across all feeds, searches, and recommendations.",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"Hide all",
+				"Hide thumbnails",
+				"Display all"
+			]
+		},
+		{
+			"variable": "allowPlayNsfwContent",
+			"name": "Allow Playing Sensitive Content",
+			"description": "Allow playback of sensitive content, including deep-linked videos.",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
+			"variable": "AnalyticsHeader",
+			"name": "Analytics",
+			"description": "Viewing activity reporting",
+			"type": "Header"
+		},
+		{
+			"variable": "submitActivity",
+			"name": "Report Views",
+			"description": "Send watch activity to instances to count views.",
+			"type": "Boolean",
+			"default": "true"
+		},
+		{
+			"variable": "ExperimentalHeader",
+			"name": "Experimental",
+			"description": "Features that are still being tested and may not work as expected.",
+			"type": "Header"
+		},
+		{
+			"variable": "enableBrowserImpersonation",
+			"name": "Browser Impersonation",
+			"description": "Impersonate a browser's TLS fingerprint to bypass bot detection (e.g. Cloudflare).",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
+			"variable": "enableCloudflareCaptcha",
+			"name": "Cloudflare Captcha Support",
+			"description": "Prompt for captcha on Cloudflare-protected instances instead of failing silently.",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
+			"variable": "enableSearchSuggestions",
+			"name": "Search Suggestions",
+			"description": "Fetch suggestions from the search API as you type. Makes extra API requests which may increase instance load.",
+			"type": "Boolean",
+			"default": "false"
+		}
+	],
 	"changelog": {
-		"16": [
-			"Use host instances from https://instances.joinpeertube.org/instances to support channels and videos from other peertube instances;",
-			"Add a setting to switch the content and channels search from an instance to sepiasearch.org;",
-			"Improve support for older peertube server versions;",
-			"Fix bugs with channel avatars and video thumbnails in some peertube server versions;"
+		"25": [
+			"Improvement: Add instance authentication;",
+			"Improvement: Import user subscriptions;",
+			"Improvement: Import user playlists;",
+			"Improvement: Content chapters;",
+			"Improvement: Add browser impersonation support (experimental, disabled by default in plugin setting);",
+			"Improvement: Initial Cloudflare captcha support (experimental, disabled by default in plugin setting);",
+			"Improvement: Add search suggestions support (experimental, disabled by default in plugin settings);",
+			"Improvement: Add independent source toggles for home feed and search to choose between current instance, Sepia Search, or both;",
+			"Improvement: Add home feed sorting settings to customize how videos are displayed on the home page (Best, Newest, Oldest, Most Views, Most Likes, Trending, Hot);",
+			"Improvement: Add plugin settings to filter home feed content by multiple categories and languages;",
+			"Improvement: Add tag search support - tag search URLs are now handled as playlists;",
+			"Improvement: Change default home feed sorting from Best to Newest for better compatibility with all PeerTube instances;",
+			"Improvement: Add NSFW content filter setting to hide NSFW content from home feed (enabled by default, applies to both content sources);",
+			"Improvement: Add support for live chat window on live videos;",
+			"Improvement: Add search filters for videos (Category, Language, License, Duration, NSFW, Features, Search Scope);",
+			"Improvement: Add search for contents within a channel;",
+			"Improvement: Add channel banner image support for channels on PeerTube v6.0.0+ instances;",
+			"Improvement: Update known instances from https://instances.joinpeertube.org, https://api.fediverse.observer/, and https://api.fedidb.org/;",
+			"Fix: Handle older instances that truncate video descriptions at 250 characters and need an additional request;",
+			"Fix: Viewer count for livestreams;"
 		],
-		"17" : [
-			"Fixed issue when opening federated content or a channel without opening the Home tab first;",
-			"Fixed issue with deep-linking from an indexed instance while the app is closed;"
+		"24": [
+			"Fix existing subscription not being recognized as subscribed in video details;",
+			"Sync known instances with https://instances.joinpeertube.org;"
 		],
-		"18" : [
-			"Fix plugin repositoryUrl and add platformUrl configurations;",
-			"Sync known instances from https://instances.joinpeertube.org and user requests;",
-			"Fix playback issues for some videos;",
-			"Add recommendations support;"
+		"23": [
+			"Fix commenter avatar in federated videos;",
+			"Fix comment replies not showing up;",
+			"Fix channel subscription not being recognized as subscribed;"
 		],
-		"19" : [
-			"Sync known instances with https://instances.joinpeertube.org"
-		],
-		"20" : [
-			"Add view reporting to PeerTube instances with a plugin setting to disable it.",
-			"Sync known instances with https://instances.joinpeertube.org"
-		],
-		"21" : [
-			"Fix resolving instances with ports;",
-			"Sync known instances with https://instances.joinpeertube.org"
-		],
-		"22" : [
+		"22": [
 			"Add support for channel playlists;",
 			"Search online playlists on the playlist tab using current instance or Sepia Search;",
 			"Add subtitles support (when available);",
@@ -56,37 +504,32 @@
 			"Map likes and dislikes display for videos;",
 			"Sync known instances with https://instances.joinpeertube.org;"
 		],
-		"23": [
-			"Fix commenter avatar in federated videos;",
-			"Fix comment replies not showing up;",
-			"Fix channel subscription not being recognized as subscribed;"
+		"21": [
+			"Fix resolving instances with ports;",
+			"Sync known instances with https://instances.joinpeertube.org"
 		],
-		"24": [
-			"Fix existing subscription not being recognized as subscribed in video details;",
-			"Sync known instances with https://instances.joinpeertube.org;"
+		"20": [
+			"Add view reporting to PeerTube instances with a plugin setting to disable it.",
+			"Sync known instances with https://instances.joinpeertube.org"
+		],
+		"19": [
+			"Sync known instances with https://instances.joinpeertube.org"
+		],
+		"18": [
+			"Fix plugin repositoryUrl and add platformUrl configurations;",
+			"Sync known instances from https://instances.joinpeertube.org and user requests;",
+			"Fix playback issues for some videos;",
+			"Add recommendations support;"
+		],
+		"17": [
+			"Fixed issue when opening federated content or a channel without opening the Home tab first;",
+			"Fixed issue with deep-linking from an indexed instance while the app is closed;"
+		],
+		"16": [
+			"Use host instances from https://instances.joinpeertube.org/instances to support channels and videos from other peertube instances;",
+			"Add a setting to switch the content and channels search from an instance to sepiasearch.org;",
+			"Improve support for older peertube server versions;",
+			"Fix bugs with channel avatars and video thumbnails in some peertube server versions;"
 		]
-	},
-	"constants": {
-		"baseUrl": "https://peertube.futo.org"
-	},
-	"settings": [
-		{
-			"variable": "searchEngineIndex",
-			"name": "Search Engine",
-			"description": "Choose how to search for PeerTube content. 'Current Instance' searches within the instance you're using and its followed instances. 'Sepia Search' searches across all indexed PeerTube instances via sepiasearch.org.",
-			"type": "Dropdown",
-			"default": "0",
-			"options": [
-				"Current Instance",
-				"Sepia Search"
-			]
-		},
-		{
-			"variable": "submitActivity",
-			"name": "Report Views",
-			"description": "Report viewing activity to PeerTube instances. After a while, the instance will use this information to increase the video's viewer counter.",
-			"type": "Boolean",
-			"default": "true"
-		}
-	]
+	}
 }

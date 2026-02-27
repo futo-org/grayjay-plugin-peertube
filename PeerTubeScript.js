@@ -1,12 +1,16 @@
+// =============================================================================
+// Constants
+// =============================================================================
+
 const PLATFORM = "PeerTube";
 
-let config = {};
-let _settings = {};
+const getUserAgent = () => bridge.authUserAgent ?? bridge.captchaUserAgent ?? 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36';
 
-let state = {
-	serverVersion: '',
-	isSearchEngineSepiaSearch: false
-}
+const IS_DESKTOP = bridge.buildPlatform === "desktop";
+
+const IMPERSONATION_TARGET = IS_DESKTOP ? 'chrome136' : 'chrome131_android';
+
+const IS_IMPERSONATION_AVAILABLE = (typeof httpimp !== 'undefined');
 
 const supportedResolutions = {
 	'1080p': { width: 1920, height: 1080 },
@@ -21,36 +25,70 @@ const URLS = {
 	PEERTUBE_LOGO: "https://plugins.grayjay.app/PeerTube/peertube.png"
 }
 
+const PAGE_SIZE_DEFAULT = 20;
+const PAGE_SIZE_HISTORY = 100;
+
+// Query parameter to flag private/unlisted playlists that require authentication
+// This is added by getUserPlaylists and checked by getPlaylist
+
+const PRIVATE_PLAYLIST_QUERY_PARAM = '&requiresAuth=1';
+
 // instances are populated during deploy appended to the end of this javascript file
 // this update process is done at update-instances.sh
+
+// =============================================================================
+// Regex patterns
+// =============================================================================
+
+// =============================================================================
+// State
+// =============================================================================
+
+let config = {};
+
+let _settings = {};
+
+let state = {
+	serverVersion: '',
+	defaultHeaders: {
+		'User-Agent': getUserAgent()
+	}
+}
+
 let INDEX_INSTANCES = {
 	instances: []
 };
 
-let SEARCH_ENGINE_OPTIONS = [];
+
+
+if (IS_IMPERSONATION_AVAILABLE) {
+	const httpImpClient = httpimp.getDefaultClient(true);
+	if (httpImpClient.setDefaultImpersonateTarget) {
+		httpImpClient.setDefaultImpersonateTarget(IMPERSONATION_TARGET);
+	}
+}
 
 Type.Feed.Playlists = "PLAYLISTS";
+
+// =============================================================================
+// Source functions
+// =============================================================================
 
 source.enable = function (conf, settings, saveStateStr) {
 	config = conf ?? {};
 	_settings = settings ?? {};
 
-	SEARCH_ENGINE_OPTIONS = loadOptionsForSetting('searchEngineIndex');
-
 	let didSaveState = false;
 
-	if (IS_TESTING) {
-		plugin.config = {
-			constants: {
-				baseUrl: "https://peertube.futo.org"
+	if (IS_TESTING && !plugin?.config?.constants?.baseUrl) {
+		plugin = {
+			config: {
+				constants: {
+					baseUrl: "https://peertube.futo.org"
+				}
 			}
-		}
-
-		_settings.searchEngineIndex = 0; //Current Instance
-		_settings.submitActivity = true;
+		};
 	}
-
-	state.isSearchEngineSepiaSearch = SEARCH_ENGINE_OPTIONS[_settings.searchEngineIndex] == 'Sepia Search'
 
 	try {
 		if (saveStateStr) {
@@ -62,13 +100,11 @@ source.enable = function (conf, settings, saveStateStr) {
 	}
 
 	if (!didSaveState) {
-		const [currentInstanceConfig] = http.batch()
-			.GET(`${plugin.config.constants.baseUrl}/api/v1/config`, {})
-			.execute();
-
-		if (currentInstanceConfig.isOk) {
-			const serverConfig = JSON.parse(currentInstanceConfig.body);
+		try {
+			const [{ body: serverConfig }] = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/config`, parseResponse: true });
 			state.serverVersion = serverConfig.serverVersion;
+		} catch (e) {
+			log("Failed to detect server version, continuing with defaults: " + e);
 		}
 	}
 
@@ -82,30 +118,301 @@ source.getHome = function () {
 
 	let sort = '';
 
+	// Get the sorting preference from settings
+	const sortOptions = [
+		'best',        // 0: Best (Algorithm)
+		'-publishedAt', // 1: Newest
+		'publishedAt',  // 2: Oldest
+		'-views',       // 3: Most Views
+		'-likes',       // 4: Most Likes
+		'-trending',    // 5: Trending
+		'-hot'          // 6: Hot
+	];
+
+	const homeFeedSortIndex = _settings.homeFeedSortIndex || 0;
+	sort = sortOptions[homeFeedSortIndex] || 'best';
+
+	// Check version compatibility for certain sorting options
+	// v3.1.0+ introduced best, trending, and hot algorithms
 	// https://docs.joinpeertube.org/CHANGELOG#v3-1-0
-	// old versions will fail when using the 'best' sorting param
-	if (ServerInstanceVersionIsSameOrNewer(state.serverVersion, '3.1.0')) {
-		sort = 'best'
+	const requiresV3_1 = ['best', '-trending', '-hot'];
+
+	if (requiresV3_1.includes(sort) && !ServerInstanceVersionIsSameOrNewer(state.serverVersion, '3.1.0')) {
+		// Fallback to newest for old versions
+		log(`Sort option '${sort}' requires PeerTube v3.1.0+, falling back to '-publishedAt'`);
+		sort = '-publishedAt';
 	}
 
-	return getVideoPager('/api/v1/videos', {
-		sort
-	}, 0);
+	const params = { sort };
+
+
+	// Collect category filters from settings
+	const settingSet = new Set([
+		_settings.mainCategoryIndex,
+		_settings.secondCategoryIndex,
+		_settings.thirdCategoryIndex,
+		_settings.fourthCategoryIndex,
+		_settings.fifthCategoryIndex
+	]);
+
+	const categoryIds = Array.from(settingSet)
+		.filter(categoryIndex => categoryIndex && parseInt(categoryIndex) > 0)
+		.map(categoryIndex => getCategoryId(categoryIndex))
+		.filter(Boolean);
+
+	// Collect language filters from settings
+	const languageSettingSet = new Set([
+		_settings.firstLanguageIndex,
+		_settings.secondLanguageIndex,
+		_settings.thirdLanguageIndex
+	]);
+
+	const languageCodes = Array.from(languageSettingSet)
+		.filter(languageIndex => languageIndex && parseInt(languageIndex) > 0)
+		.map(languageIndex => getLanguageCode(languageIndex))
+		.filter(Boolean);
+
+
+	// Apply category and language filters (shared across all sources)
+	if (categoryIds.length > 0) {
+		params.categoryOneOf = categoryIds;
+	}
+	if (languageCodes.length > 0) {
+		params.languageOneOf = languageCodes;
+	}
+
+	// Map PeerTube sort options to Sepia Search equivalents
+	const sepiaSearchSortMap = {
+		'best': 'match',           // Best algorithm -> relevance match
+		'-publishedAt': '-createdAt', // Newest -> most recent
+		'publishedAt': 'createdAt',   // Oldest -> least recent
+		'-views': '-views',        // Most Views -> same
+		'-likes': '-likes',        // Most Likes -> same
+		'-trending': '-views',     // Trending -> most views (closest equivalent)
+		'-hot': '-views'           // Hot -> most views (closest equivalent)
+	};
+
+	if (_settings.homeSourceCurrentInstance === true && _settings.homeSourceSepiaSearch === true) {
+		// Both sources: fetch in parallel, merge, deduplicate
+		const localContext = {
+			path: '/api/v1/videos',
+			params: { ...params },
+			page: 0,
+			sourceHost: plugin.config.constants.baseUrl
+		};
+		const sepiaContext = {
+			path: '/api/v1/search/videos',
+			params: { ...params, resultType: 'videos', sort: sepiaSearchSortMap[sort] || 'match' },
+			page: 0,
+			sourceHost: 'https://sepiasearch.org'
+		};
+		return getMixedVideoPager(localContext, sepiaContext);
+	} else if (_settings.homeSourceSepiaSearch === true) {
+		// Sepia Search only
+		params.resultType = 'videos';
+		params.sort = sepiaSearchSortMap[sort] || 'match';
+		return getVideoPager('/api/v1/search/videos', params, 0, 'https://sepiasearch.org', true);
+	} else {
+		// Current instance only (default)
+		return getVideoPager('/api/v1/videos', params, 0, plugin.config.constants.baseUrl, false);
+	}
 };
 
 source.searchSuggestions = function (query) {
-	return [];
+	if (!_settings.enableSearchSuggestions) return [];
+	if (!query || query.trim().length < 2) return [];
+
+	try {
+		const nsfwPolicy = getNSFWPolicy();
+		const baseParams = {
+			search: query.trim(),
+			start: 0,
+			count: 10
+		};
+		if (nsfwPolicy !== 'display') {
+			baseParams.nsfw = false;
+		}
+
+		// Fetch from enabled sources
+		const requests = [];
+		if (_settings.searchCurrentInstance === true) {
+			requests.push(`${plugin.config.constants.baseUrl}/api/v1/search/videos?${buildQuery(baseParams)}`);
+		}
+		if (_settings.searchSepiaSearch === true) {
+			requests.push(`https://sepiasearch.org/api/v1/search/videos?${buildQuery({ ...baseParams, resultType: 'videos' })}`);
+		}
+		if (requests.length === 0) {
+			requests.push(`${plugin.config.constants.baseUrl}/api/v1/search/videos?${buildQuery(baseParams)}`);
+		}
+
+		const allVideos = [];
+		if (requests.length === 1) {
+			const [resp] = httpGET(requests[0]);
+			const data = JSON.parse(resp.body);
+			if (data?.data) allVideos.push(...data.data);
+		} else {
+			const responses = httpGET(requests);
+			for (const resp of responses) {
+				if (!resp.isOk) continue;
+				try {
+					const data = JSON.parse(resp.body);
+					if (data?.data) allVideos.push(...data.data);
+				} catch (e) { /* ignore */ }
+			}
+		}
+		if (!allVideos.length) return [];
+
+		// Collect unique tags and video titles that match the query
+		const queryLower = query.trim().toLowerCase();
+		const seen = new Set();
+		const suggestions = [];
+
+		for (const video of allVideos) {
+			// Add matching video titles
+			if (video.name && video.name.toLowerCase().includes(queryLower)) {
+				const key = video.name.toLowerCase();
+				if (!seen.has(key)) {
+					seen.add(key);
+					suggestions.push(video.name);
+				}
+			}
+
+			// Add matching tags
+			for (const tag of (video.tags ?? [])) {
+				if (tag.toLowerCase().includes(queryLower)) {
+					const key = tag.toLowerCase();
+					if (!seen.has(key)) {
+						seen.add(key);
+						suggestions.push(tag);
+					}
+				}
+			}
+		}
+
+		return suggestions.slice(0, 10);
+	} catch (e) {
+		log("Failed to get search suggestions", e);
+		return [];
+	}
 };
+
 source.getSearchCapabilities = () => {
-	return {
-		types: [Type.Feed.Mixed, Type.Feed.Streams, Type.Feed.Videos],
-		sorts: [Type.Order.Chronological, "publishedAt"]
-	};
+	return new ResultCapabilities([Type.Feed.Mixed, Type.Feed.Videos], [], [
+		new FilterGroup("Upload Date", [
+			new FilterCapability("Last Hour", Type.Date.LastHour),
+			new FilterCapability("This Day", Type.Date.Today),
+			new FilterCapability("This Week", Type.Date.LastWeek),
+			new FilterCapability("This Month", Type.Date.LastMonth),
+			new FilterCapability("This Year", Type.Date.LastYear),
+		], false, "date"),
+		new FilterGroup("Duration", [
+			new FilterCapability("Under 4 minutes", Type.Duration.Short),
+			new FilterCapability("4-20 minutes", Type.Duration.Medium),
+			new FilterCapability("Over 20 minutes", Type.Duration.Long)
+		], false, "duration"),
+		new FilterGroup("Features", [
+			new FilterCapability("Live", "live", "live"),
+		], true, "features"),
+		new FilterGroup("License", [
+			new FilterCapability("Attribution", "1"),
+			new FilterCapability("Attribution - Share Alike", "2"),
+			new FilterCapability("Attribution - No Derivatives", "3"),
+			new FilterCapability("Attribution - Non Commercial", "4"),
+			new FilterCapability("Attribution - Non Commercial - Share Alike", "5"),
+			new FilterCapability("Attribution - Non Commercial - No Derivatives", "6"),
+			new FilterCapability("Public Domain Dedication", "7"),
+		], true, "license"),
+		new FilterGroup("Content", [
+			new FilterCapability("All Content", "all_content"),
+			new FilterCapability("Safe Content Only", "safe_only"),
+			new FilterCapability("NSFW Content Only", "nsfw_only"),
+		], false, "nsfw"),
+		new FilterGroup("Category", [
+			new FilterCapability("Music", "1"),
+			new FilterCapability("Films", "2"),
+			new FilterCapability("Vehicles", "3"),
+			new FilterCapability("Art", "4"),
+			new FilterCapability("Sports", "5"),
+			new FilterCapability("Travels", "6"),
+			new FilterCapability("Gaming", "7"),
+			new FilterCapability("People", "8"),
+			new FilterCapability("Comedy", "9"),
+			new FilterCapability("Entertainment", "10"),
+			new FilterCapability("News & Politics", "11"),
+			new FilterCapability("How To", "12"),
+			new FilterCapability("Education", "13"),
+			new FilterCapability("Activism", "14"),
+			new FilterCapability("Science & Technology", "15"),
+			new FilterCapability("Animals", "16"),
+			new FilterCapability("Kids", "17"),
+			new FilterCapability("Food", "18"),
+		], true, "category"),
+		new FilterGroup("Language", [
+			new FilterCapability("English", "en"),
+			new FilterCapability("Français", "fr"),
+			new FilterCapability("العربية", "ar"),
+			new FilterCapability("Català", "ca"),
+			new FilterCapability("Čeština", "cs"),
+			new FilterCapability("Deutsch", "de"),
+			new FilterCapability("ελληνικά", "el"),
+			new FilterCapability("Esperanto", "eo"),
+			new FilterCapability("Español", "es"),
+			new FilterCapability("Euskara", "eu"),
+			new FilterCapability("فارسی", "fa"),
+			new FilterCapability("Suomi", "fi"),
+			new FilterCapability("Gàidhlig", "gd"),
+			new FilterCapability("Galego", "gl"),
+			new FilterCapability("Hrvatski", "hr"),
+			new FilterCapability("Magyar", "hu"),
+			new FilterCapability("Íslenska", "is"),
+			new FilterCapability("Italiano", "it"),
+			new FilterCapability("日本語", "ja"),
+			new FilterCapability("Taqbaylit", "kab"),
+			new FilterCapability("Nederlands", "nl"),
+			new FilterCapability("Norsk", "no"),
+			new FilterCapability("Occitan", "oc"),
+			new FilterCapability("Polski", "pl"),
+			new FilterCapability("Português (Brasil)", "pt"),
+			new FilterCapability("Português (Portugal)", "pt-PT"),
+			new FilterCapability("Pусский", "ru"),
+			new FilterCapability("Slovenčina", "sk"),
+			new FilterCapability("Shqip", "sq"),
+			new FilterCapability("Svenska", "sv"),
+			new FilterCapability("ไทย", "th"),
+			new FilterCapability("Toki Pona", "tok"),
+			new FilterCapability("Türkçe", "tr"),
+			new FilterCapability("украї́нська мо́ва", "uk"),
+			new FilterCapability("Tiếng Việt", "vi"),
+			new FilterCapability("简体中文（中国）", "zh-Hans"),
+			new FilterCapability("繁體中文（台灣）", "zh-Hant"),
+		], true, "language"),
+		new FilterGroup("Search Scope", [
+			new FilterCapability("Federated Network", "federated"),
+			new FilterCapability("Local Instance Only", "local"),
+			new FilterCapability("Sepia Search", "sepia"),
+		], false, "scope")
+	]);
 };
+
 source.search = function (query, type, order, filters) {
+	
+	if(IS_TESTING) {
+		/*
+		//filter example: 
+			{"duration": ["SHORT"]}
+		*/
+		if(typeof filters === 'string') {	
+			filters = JSON.parse(filters);
+		}
+	}
 
 	if(source.isContentDetailsUrl(query)) {
 		return new ContentPager([source.getContentDetails(query)], false);
+	}
+
+	// Handle tag search URLs as playlists
+	if(source.isPlaylistUrl(query)) {
+		return new PlaylistPager([source.getPlaylist(query)], false);
 	}
 
 	let sort = order;
@@ -124,55 +431,162 @@ source.search = function (query, type, order, filters) {
 		params.isLive = false;
 	}
 
-	let sourceHost = '';
+	// Apply filters (YouTube-style object structure)
+	if (filters) {
+		// Date filter
+		if (filters.date && filters.date.length > 0) {
+			const dateFilter = filters.date[0];
+			const now = new Date();
+			if (dateFilter === Type.Date.LastHour) {
+				const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+				params.publishedAfter = oneHourAgo.toISOString();
+			} else if (dateFilter === Type.Date.Today) {
+				const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+				params.publishedAfter = startOfDay.toISOString();
+			} else if (dateFilter === Type.Date.LastWeek) {
+				const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+				params.publishedAfter = oneWeekAgo.toISOString();
+			} else if (dateFilter === Type.Date.LastMonth) {
+				const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+				params.publishedAfter = oneMonthAgo.toISOString();
+			} else if (dateFilter === Type.Date.LastYear) {
+				const startOfYear = new Date(now.getFullYear(), 0, 1);
+				params.publishedAfter = startOfYear.toISOString();
+			}
+		}
 
-	if (state.isSearchEngineSepiaSearch) {
-		params.resultType = 'videos';
-		params.nsfw = false;
-		params.sort = '-createdAt'
-		sourceHost = 'https://sepiasearch.org'
-	} else {
-		sourceHost = plugin.config.constants.baseUrl;
+		// Duration filter
+		if (filters.duration && filters.duration.length > 0) {
+			const durationFilter = filters.duration[0];
+			if (durationFilter === Type.Duration.Short) {
+				params.durationMax = 240; // Under 4 minutes
+			} else if (durationFilter === Type.Duration.Medium) {
+				params.durationMin = 240; // 4 minutes
+				params.durationMax = 1200; // 20 minutes
+			} else if (durationFilter === Type.Duration.Long) {
+				params.durationMin = 1200; // Over 20 minutes
+			}
+		}
+
+		// Features filter (multi-select)
+		if (filters.features && filters.features.length > 0) {
+			// Check if "live" is selected
+			const hasLive = filters.features.includes("live");
+			if (hasLive) {
+				params.isLive = true;
+			}
+			// Note: If live is not selected, we don't set isLive parameter
+			// This allows both live and non-live videos to be returned
+		}
+
+		// NSFW Content filter
+		if (filters.nsfw && filters.nsfw.length > 0) {
+			const nsfwFilter = filters.nsfw[0];
+			if (nsfwFilter === "safe_only") {
+				params.nsfw = "false";
+			} else if (nsfwFilter === "nsfw_only") {
+				params.nsfw = "true";
+			}
+			// "all_content" doesn't set any filter
+		}
+
+		// Category filter (multi-select)
+		if (filters.category && filters.category.length > 0) {
+			params.categoryOneOf = filters.category;
+		}
+
+		// Language filter (multi-select)
+		if (filters.language && filters.language.length > 0) {
+			params.languageOneOf = filters.language;
+		}
+
+		// License filter (multi-select)
+		if (filters.license && filters.license.length > 0) {
+			params.licenceOneOf = filters.license;
+		}
+
+		// Search Scope filter
+		if (filters.scope && filters.scope.length > 0) {
+			const scopeFilter = filters.scope[0];
+			if (scopeFilter === "sepia") {
+				// Force Sepia Search mode - use Sepia Search directly
+				const sepiaParams = {
+					search: query,
+					resultType: 'videos',
+					sort: '-createdAt'
+				};
+
+				// Apply other filters to Sepia Search
+				if (params.categoryOneOf) sepiaParams.categoryOneOf = params.categoryOneOf;
+				if (params.languageOneOf) sepiaParams.languageOneOf = params.languageOneOf;
+				if (params.durationMin) sepiaParams.durationMin = params.durationMin;
+				if (params.durationMax) sepiaParams.durationMax = params.durationMax;
+				if (params.publishedAfter) sepiaParams.publishedAfter = params.publishedAfter;
+				if (params.isLive !== undefined) sepiaParams.isLive = params.isLive;
+				if (params.licenceOneOf) sepiaParams.licenceOneOf = params.licenceOneOf;
+				if (params.nsfw) sepiaParams.nsfw = params.nsfw;
+
+				return getVideoPager('/api/v1/search/videos', sepiaParams, 0, 'https://sepiasearch.org', true);
+			} else if (scopeFilter === "local" && _settings.searchCurrentInstance === true) {
+				params.searchTarget = "local";
+			}
+			// "federated" means federated (default), so no parameter needed
+		}
 	}
 
-	const isSearch = true;
-
-	return getVideoPager('/api/v1/search/videos', params, 0, sourceHost, isSearch);
+	if (_settings.searchCurrentInstance === true && _settings.searchSepiaSearch === true) {
+		// Both sources: fetch in parallel, merge, deduplicate, sort
+		const localContext = {
+			path: '/api/v1/search/videos',
+			params: { ...params },
+			page: 0,
+			sourceHost: plugin.config.constants.baseUrl
+		};
+		const sepiaContext = {
+			path: '/api/v1/search/videos',
+			params: { ...params, resultType: 'videos', sort: '-createdAt' },
+			page: 0,
+			sourceHost: 'https://sepiasearch.org'
+		};
+		return getMixedVideoPager(localContext, sepiaContext);
+	} else if (_settings.searchSepiaSearch === true) {
+		params.resultType = 'videos';
+		params.sort = '-createdAt';
+		return getVideoPager('/api/v1/search/videos', params, 0, 'https://sepiasearch.org', true);
+	} else {
+		return getVideoPager('/api/v1/search/videos', params, 0, plugin.config.constants.baseUrl, true);
+	}
 };
+
 source.searchChannels = function (query) {
 
-	let sourceHost = '';
-
-	if (state.isSearchEngineSepiaSearch) {
-		sourceHost = 'https://sepiasearch.org'
-	} else {
-		sourceHost = plugin.config.constants.baseUrl;
-	}
-
-	const isSearch = true;
+	// Channel search doesn't support mixed pager (different result type),
+	// so use Sepia Search if enabled, otherwise current instance
+	const sourceHost = _settings.searchSepiaSearch === true
+		? 'https://sepiasearch.org'
+		: plugin.config.constants.baseUrl;
 
 	return getChannelPager('/api/v1/search/video-channels', {
 		search: query
-	}, 0, sourceHost, isSearch);
+	}, 0, sourceHost, true);
 };
 
 source.searchPlaylists = function (query) {
-	// Determine the search host based on settings
-	let sourceHost = state.isSearchEngineSepiaSearch 
-		? 'https://sepiasearch.org' 
+	// Playlist search doesn't support mixed pager (different result type),
+	// so use Sepia Search if enabled, otherwise current instance
+	const sourceHost = _settings.searchSepiaSearch === true
+		? 'https://sepiasearch.org'
 		: plugin.config.constants.baseUrl;
-	
+
 	const params = {
 		search: query
 	};
-	
-	// For Sepia Search, add specific parameters
-	if (state.isSearchEngineSepiaSearch) {
+
+	if (_settings.searchSepiaSearch === true) {
 		params.resultType = 'video-playlists';
-		params.nsfw = false;
 		params.sort = '-createdAt';
 	}
-	
+
 	return getPlaylistPager('/api/v1/search/video-playlists', params, 0, sourceHost, true);
 };
 
@@ -218,8 +632,6 @@ source.isChannelUrl = function (url) {
 	}
 };
 
-
-
 source.getChannel = function (url) {
 
 	const handle = extractChannelId(url);
@@ -231,40 +643,211 @@ source.getChannel = function (url) {
 	const sourceBaseUrl = getBaseUrl(url);
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-channels/${handle}`;
 
-	const res = http.GET(urlWithParams, {});
+	try {
+		const [{ body: obj }] = httpGET({ url: urlWithParams, parseResponse: true });
 
-	if (res.code != 200) {
-		log("Failed to get channel", res);
+		// Add URL hint using utility function
+		const channelUrl = obj.url || `${sourceBaseUrl}/video-channels/${handle}`;
+		const channelUrlWithHint = addChannelUrlHint(channelUrl);
+		
+		return new PlatformChannel({
+			id: new PlatformID(PLATFORM, obj.name, config.id),
+			name: obj.displayName || obj.name || handle,
+			thumbnail: getAvatarUrl(obj, sourceBaseUrl),
+			banner: getBannerUrl(obj, sourceBaseUrl),
+			subscribers: obj.followersCount || 0,
+			description: obj.description ?? "",
+			url: channelUrlWithHint,
+			links: {},
+			urlAlternatives: [
+				channelUrl,
+				channelUrlWithHint
+			]
+		});
+	} catch (e) {
+		log("Failed to get channel", e);
 		return null;
 	}
 
-	const obj = JSON.parse(res.body);
-
-	// Add URL hint using utility function
-	const channelUrl = obj.url || `${sourceBaseUrl}/video-channels/${handle}`;
-	const channelUrlWithHint = addChannelUrlHint(channelUrl);
-	
-	return new PlatformChannel({
-		id: new PlatformID(PLATFORM, obj.name, config.id),
-		name: obj.displayName || obj.name || handle,
-		thumbnail: getAvatarUrl(obj, sourceBaseUrl),
-		banner: null,
-		subscribers: obj.followersCount || 0,
-		description: obj.description ?? "",
-		url: channelUrlWithHint,
-		links: {},
-		urlAlternatives: [
-			channelUrl,
-			channelUrlWithHint
-		]
-	});
 };
+
+/**
+ * Retrieves the list of subscriptions for the authenticated user.
+ * 
+ * This function fetches all subscriptions from the PeerTube instance.
+ * It handles pagination automatically, using batch requests if multiple pages are needed
+ * 
+ * @returns {string[]} An array of subscription URLs.
+ */
+
+source.getUserSubscriptions = function() {
+
+	if (!bridge.isLoggedIn()) {
+		bridge.log("Failed to retrieve subscriptions page because not logged in.");
+		throw new ScriptException("Not logged in");
+	}
+
+	const itemsPerPage = 100;
+	let subscriptionUrls = [];
+	
+	const initialParams = { start: 0, count: itemsPerPage };
+	const endpointUrl = `${plugin.config.constants.baseUrl}/api/v1/users/me/subscriptions`;
+	const initialRequestUrl = `${endpointUrl}?${buildQuery(initialParams)}`;
+	
+	let initialResponseBody;
+	try {
+		[{ body: initialResponseBody }] = httpGET({ url: initialRequestUrl, useAuthenticated: true, parseResponse: true });
+	} catch (e) {
+		log("Failed to get user subscriptions", e);
+		return [];
+	}
+	
+	if (initialResponseBody.data && initialResponseBody.data.length > 0) {
+		initialResponseBody.data.forEach(subscription => {
+			if (subscription.url) subscriptionUrls.push(subscription.url);
+		});
+	}
+
+	const totalSubscriptions = initialResponseBody.total;
+	if (subscriptionUrls.length >= totalSubscriptions) {
+		return subscriptionUrls;
+	}
+
+	const remainingSubscriptions = totalSubscriptions - subscriptionUrls.length;
+	const remainingPages = Math.ceil(remainingSubscriptions / itemsPerPage);
+
+	if (remainingPages > 1) {
+		const batchUrls = [];
+		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
+			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
+			batchUrls.push({ url: `${endpointUrl}?${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
+		}
+		const batchResponses = httpGET(batchUrls);
+
+		batchResponses.forEach(batchResponse => {
+			if (batchResponse.isOk && batchResponse.code === 200) {
+				if (batchResponse.body.data) {
+					batchResponse.body.data.forEach(subscription => {
+						if (subscription.url) subscriptionUrls.push(subscription.url);
+					});
+				}
+			}
+		});
+	} else {
+		for (let pageIndex = 1; pageIndex <= remainingPages; pageIndex++) {
+			const pageParams = { start: pageIndex * itemsPerPage, count: itemsPerPage };
+			try {
+				const [{ body: pageResponseBody }] = httpGET({ url: `${endpointUrl}?${buildQuery(pageParams)}`, useAuthenticated: true, parseResponse: true });
+				if (pageResponseBody.data) {
+					pageResponseBody.data.forEach(subscription => {
+						if (subscription.url) subscriptionUrls.push(subscription.url);
+					});
+				}
+			} catch (e) {
+				// Continue to next page on error
+			}
+		}
+	}
+	
+	return subscriptionUrls;
+};
+
+// source.getUserHistory = function() {
+
+// 	if (!bridge.isLoggedIn()) {
+// 		bridge.log("Failed to retrieve history page because not logged in.");
+// 		throw new ScriptException("Not logged in");
+// 	}
+
+// 	return getHistoryVideoPager("/api/v1/users/me/history/videos", {}, 0);
+// };
+
+source.getUserPlaylists = function() {
+	let meData;
+	try {
+		[{ body: meData }] = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/users/me`, useAuthenticated: true, parseResponse: true });
+	} catch (e) {
+		return [];
+	}
+	
+	const username = meData.account?.name;
+	if (!username) return [];
+
+	const itemsPerPage = 50;
+	let playlistUrls = [];
+	const endpointUrl = `${plugin.config.constants.baseUrl}/api/v1/accounts/${username}/video-playlists`;
+	const baseParams = { sort: '-updatedAt' };
+	
+	// Helper to build playlist URL with auth flag for private/unlisted playlists
+	const buildPlaylistUrl = (p) => {
+		let url = p.uuid 
+			? `${plugin.config.constants.baseUrl}/w/p/${p.uuid}` 
+			: p.url;
+		if (url && p.privacy?.id !== 1) {
+			url += PRIVATE_PLAYLIST_QUERY_PARAM;
+		}
+		return url;
+	};
+
+	let initialResponseBody;
+	try {
+		[{ body: initialResponseBody }] = httpGET({ url: `${endpointUrl}?${buildQuery({ ...baseParams, start: 0, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
+	} catch (e) {
+		return [];
+	}
+	if (initialResponseBody.data) {
+		initialResponseBody.data.forEach(p => {
+			const url = buildPlaylistUrl(p);
+			if (url) playlistUrls.push(url);
+		});
+	}
+
+	const total = initialResponseBody.total;
+	if (playlistUrls.length >= total) return playlistUrls;
+
+	const remainingPages = Math.ceil((total - playlistUrls.length) / itemsPerPage);
+
+	if (remainingPages > 1) {
+		const batchUrls = [];
+		for (let i = 1; i <= remainingPages; i++) {
+			batchUrls.push({ url: `${endpointUrl}?${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
+		}
+		httpGET(batchUrls).forEach(r => {
+			if (r.isOk && r.code === 200) {
+				if (r.body.data) {
+					r.body.data.forEach(p => {
+						const url = buildPlaylistUrl(p);
+						if (url) playlistUrls.push(url);
+					});
+				}
+			}
+		});
+	} else {
+		for (let i = 1; i <= remainingPages; i++) {
+			try {
+				const [{ body: { data } }] = httpGET({ url: `${endpointUrl}?${buildQuery({ ...baseParams, start: i * itemsPerPage, count: itemsPerPage })}`, useAuthenticated: true, parseResponse: true });
+				if (data) {
+					data.forEach(p => {
+						const url = buildPlaylistUrl(p);
+						if (url) playlistUrls.push(url);
+					});
+				}
+			} catch (e) {
+				// Continue to next page on error
+			}
+		}
+	}
+	
+	return playlistUrls;
+};
+
 source.getChannelCapabilities = () => {
 	return {
 		types: [Type.Feed.Mixed, Type.Feed.Streams, Type.Feed.Videos, Type.Feed.Playlists],
 		sorts: [Type.Order.Chronological, "publishedAt"]
 	};
 };
+
 source.getChannelContents = function (url, type, order, filters) {
 	let sort = order;
 	if (sort === Type.Order.Chronological) {
@@ -290,8 +873,26 @@ source.getChannelContents = function (url, type, order, filters) {
 			params.isLive = false;
 		}
 
-		return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl);
+		return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl, false, null, true);
 	}
+};
+
+source.searchChannelContents = function (channelUrl, query, type, order, filters) {
+
+	const handle = extractChannelId(channelUrl);
+	const sourceBaseUrl = getBaseUrl(channelUrl);
+
+	if (!handle) {
+		throw new ScriptException(`Failed to extract channel ID from URL: ${channelUrl}`);
+	}
+
+	const params = {
+		search: query.trim(),
+		sort: "-publishedAt"
+	};
+
+	// Use the channel-specific videos endpoint with search parameter
+	return getVideoPager(`/api/v1/video-channels/${handle}/videos`, params, 0, sourceBaseUrl, false, null, true);
 };
 
 source.getChannelPlaylists = function (url, order, filters) {
@@ -314,12 +915,19 @@ source.getChannelPlaylists = function (url, order, filters) {
 };
 
 // Adds support for checking if a URL is a playlist URL
+
 source.isPlaylistUrl = function(url) {
 	try {
 		if (!url) return false;
 
 		// Check for URL hint
-		if (url.includes('isPeertubePlaylist=1')) {
+		if (url.includes('isPeertubePlaylist=1') || url.includes('isPeertubeTagSearch=1')) {
+			return true;
+		}
+
+		// Check for tag search URLs
+		const urlObj = new URL(url);
+		if (urlObj.pathname === '/search' && urlObj.searchParams.has('tagsOneOf')) {
 			return true;
 		}
 
@@ -362,23 +970,43 @@ source.isPlaylistUrl = function(url) {
 };
 
 // Gets a playlist and its information
+
 source.getPlaylist = function(url) {
-	const playlistId = extractPlaylistId(url);
+	// Check if this is a tag search URL
+	try {
+		const urlObj = new URL(url);
+		if (urlObj.pathname === '/search' && urlObj.searchParams.has('tagsOneOf')) {
+			return getTagPlaylist(url);
+		}
+	} catch (e) {
+		// Continue with regular playlist handling
+	}
+
+	// Check if this is a private playlist that requires authentication
+	// Private playlists are flagged with PRIVATE_PLAYLIST_QUERY_PARAM by getUserPlaylists
+	// We also verify that the URL belongs to the base instance to prevent bad actors from triggering auth on external domains
+	const requiresAuth = url.includes(PRIVATE_PLAYLIST_QUERY_PARAM) && isBaseInstanceUrl(url);
+	
+	// Remove the auth flag from URL before processing
+	const cleanUrl = url.replace(PRIVATE_PLAYLIST_QUERY_PARAM, '');
+
+	const playlistId = extractPlaylistId(cleanUrl);
 	if (!playlistId) {
 		return null;
 	}
 
-	const sourceBaseUrl = getBaseUrl(url);
+	const sourceBaseUrl = getBaseUrl(cleanUrl);
 	const urlWithParams = `${sourceBaseUrl}/api/v1/video-playlists/${playlistId}`;
 	
-	const res = http.GET(urlWithParams, {});
-	
-	if (res.code != 200) {
-		log("Failed to get playlist", res);
+	let playlist;
+	try {
+		// Only use auth for private playlists from the base instance
+		[{ body: playlist }] = httpGET({ url: urlWithParams, useAuthenticated: requiresAuth, parseResponse: true });
+	} catch (e) {
+		log("Failed to get playlist", e);
 		return null;
 	}
 	
-	const playlist = JSON.parse(res.body);
 	const thumbnailUrl = playlist.thumbnailPath ? 
 		`${sourceBaseUrl}${playlist.thumbnailPath}` : 
 		URLS.PEERTUBE_LOGO;
@@ -408,7 +1036,8 @@ source.getPlaylist = function(url) {
 			(playlistItem) => {
 				
 				return playlistItem.video;
-			}
+			},
+			requiresAuth
 		)
 	});
 };
@@ -454,48 +1083,6 @@ source.isContentDetailsUrl = function (url) {
 };
 
 
-
-/**
- * Processes captions data from API response into GrayJay subtitle format
- * @param {Object} subtitlesResponse - HTTP response containing captions data
- * @returns {Array} - Array of subtitle objects or empty array if none available
- */
-function processSubtitlesData(subtitlesResponse) {
-	if (!subtitlesResponse.isOk) {
-		log("Failed to get video subtitles", subtitlesResponse);
-		return [];
-	}
-
-	try {
-
-		const baseUrl = getBaseUrl(subtitlesResponse.url);
-
-		const captionsData = JSON.parse(subtitlesResponse.body);
-		if (!captionsData || !captionsData.data || captionsData.total === 0) {
-			return [];
-		}
-
-		// Convert PeerTube captions to GrayJay subtitle format
-		return captionsData.data
-			.map(caption => {
-
-				const subtitleUrl = caption?.fileUrl
-					?? (caption.captionPath ? `${baseUrl}${caption.captionPath}` : ""); //6.1.0
-
-				return {
-					name: `${caption?.language?.label ?? caption?.language?.id} ${caption.automaticallyGenerated ? "(auto-generated)" : ""}`,
-					url: subtitleUrl,
-					format: "text/vtt",
-					language: caption.language.id
-				};
-			})
-			.filter(caption => caption.url);
-	} catch (e) {
-		log("Error parsing captions data", e);
-		return [];
-	}
-}
-
 source.getContentDetails = function (url) {
 	const videoId = extractVideoId(url);
 	if (!videoId) {
@@ -504,13 +1091,16 @@ source.getContentDetails = function (url) {
 
 	const sourceBaseUrl = getBaseUrl(url);
 	
-	// Create a batch request for both video details and captions
-	const [videoDetails, captionsData] = http.batch()
-		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}`, {})
-		.GET(`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`, {})
-		.execute();
+	// Create a batch request for video details, captions, chapters and instance config
+	const [videoDetails, captionsData, chaptersData, instanceConfig] = httpGET([
+		`${sourceBaseUrl}/api/v1/videos/${videoId}`,
+		`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`,
+		`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`,
+		`${sourceBaseUrl}/api/v1/config`
+	]);
 	
 	if (!videoDetails.isOk) {
+		throwIfCaptcha(videoDetails);
 		log("Failed to get video detail", videoDetails);
 		return null;
 	}
@@ -521,6 +1111,11 @@ source.getContentDetails = function (url) {
 		return null;
 	}
 
+	// Check if content is sensitive and if playing NSFW content is disabled
+	if (obj.nsfw && !_settings.allowPlayNsfwContent) {
+		throw new UnavailableException("This video contains mature or explicit content. This warning can be disabled in the plugin settings.");
+	}
+
 	//Some older instance versions such as 3.0.0, may not contain the url property
 	// Add URL hints using utility functions
 	const contentUrl = addContentUrlHint(obj.url || `${sourceBaseUrl}/videos/watch/${obj.uuid}`);
@@ -528,6 +1123,24 @@ source.getContentDetails = function (url) {
 	
 	// Process subtitles data
 	const subtitles = processSubtitlesData(captionsData);
+
+	// Parse source instance version for feature detection
+	const sourceInstanceVersion = getInstanceVersion(instanceConfig);
+
+	// PeerTube < v5.0.0 truncates description to 250 chars in /api/v1/videos/{id}.
+	// Full description requires /api/v1/videos/{id}/description (deprecated in v5.0.0+).
+	// See: https://github.com/Chocobozzz/PeerTube/releases/tag/v5.0.0
+	let fullDescription = obj.description;
+	if (!ServerInstanceVersionIsSameOrNewer(sourceInstanceVersion, '5.0.0')
+		&& fullDescription && fullDescription.length >= 250 && fullDescription.endsWith('...')) {
+		try {
+			const descId = obj.uuid || videoId;
+			const [descResp] = httpGET(`${sourceBaseUrl}/api/v1/videos/${descId}/description`);
+			fullDescription = getFullDescription(descResp, fullDescription);
+		} catch (e) {
+			log("Failed to fetch full description", e);
+		}
+	}
 
 	const result = new PlatformVideoDetails({
 		id: new PlatformID(PLATFORM, obj.uuid, config.id),
@@ -544,10 +1157,10 @@ source.getContentDetails = function (url) {
 		),
 		datetime: Math.round((new Date(obj.publishedAt)).getTime() / 1000),
 		duration: obj.duration,
-		viewCount: obj.views,
+		viewCount: obj.isLive ? (obj.viewers ?? obj.views) : obj.views,
 		url: contentUrl,
 		isLive: obj.isLive,
-		description: obj.description,
+		description: fullDescription,
 		video: getMediaDescriptor(obj),
 		subtitles: subtitles,
 		rating: new RatingLikesDislikes(
@@ -558,9 +1171,13 @@ source.getContentDetails = function (url) {
 
 	if (IS_TESTING) {
 		source.getContentRecommendations(url, obj);
+		source.getContentChapters(url, chaptersData, obj.duration);
 	} else {
 		result.getContentRecommendations = function () {
 			return source.getContentRecommendations(url, obj);
+		};
+		result.getContentChapters = function () {
+			return source.getContentChapters(url, chaptersData, obj.duration);
 		};
 	}
 
@@ -575,18 +1192,18 @@ source.getContentRecommendations = function (url, obj) {
 	let tagsOneOf = obj?.tags ?? [];
 
 	if (!obj && videoId) {
-		const res = http.GET(`${sourceHost}/api/v1/videos/${videoId}`, {});
-		if (res.isOk) {
-			const obj = JSON.parse(res.body);
-			if (obj) {
-				tagsOneOf = obj?.tags ?? []
+		try {
+			const [{ body: videoData }] = httpGET({ url: `${sourceHost}/api/v1/videos/${videoId}`, parseResponse: true });
+			if (videoData) {
+				tagsOneOf = videoData?.tags ?? []
 			}
+		} catch (e) {
+			// Continue with empty tags
 		}
 	}
 
 	const params = {
 		skipCount: false,
-		nsfw: false,
 		tagsOneOf,
 		sort: "-publishedAt",
 		searchTarget: "local"
@@ -598,11 +1215,32 @@ source.getContentRecommendations = function (url, obj) {
 	return pager;
 }
 
+source.getContentChapters = function (url, chaptersData, videoDuration) {
+	if (chaptersData) {
+		return extractChapters(chaptersData, videoDuration);
+	}
+
+	const videoId = extractVideoId(url);
+	if (!videoId) return [];
+
+	const sourceBaseUrl = getBaseUrl(url);
+	try {
+		const [chaptersResp, videoData] = httpGET([
+			`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`,
+			{ url: `${sourceBaseUrl}/api/v1/videos/${videoId}`, parseResponse: true }
+		]);
+		return extractChapters(chaptersResp, videoData?.body?.duration);
+	} catch (e) {
+		return [];
+	}
+}
+
 source.getComments = function (url) {
 	const videoId = extractVideoId(url);
 	const sourceBaseUrl = getBaseUrl(url);
 	return getCommentPager(videoId, {}, 0, sourceBaseUrl);
 }
+
 source.getSubComments = function (comment) {
 	if (typeof comment === 'string') {
 		try {
@@ -639,14 +1277,7 @@ source.getSubComments = function (comment) {
 	const apiUrl = `${sourceBaseUrl}/api/v1/videos/${videoId}/comment-threads/${commentId}`;
 	
 	try {
-		const res = http.GET(apiUrl, {});
-		
-		if (res.code != 200) {
-			bridge.log("Failed to get sub-comments, status: " + res.code);
-			return new CommentPager([], false);
-		}
-		
-		const obj = JSON.parse(res.body);
+		const [{ body: obj }] = httpGET({ url: apiUrl, parseResponse: true });
 		
 		// Extract replies from the comment thread response
 		const replies = obj.children || [];
@@ -683,8 +1314,57 @@ source.getSubComments = function (comment) {
 	}
 }
 
+/**
+ * Returns chat window information for live PeerTube videos with chat
+ * @param {string} url - The video URL
+ * @returns {Object|null} Chat window configuration or null if chat not available
+ */
+
+source.getLiveChatWindow = function (url) {
+    // Extract video ID and base URL
+    const videoId = extractVideoId(url);
+    if (!videoId) {
+        return null;
+    }
+    
+    const sourceBaseUrl = getBaseUrl(url);
+    
+    // Check if the video is live and has chat enabled
+    try {
+        const [{ body: videoData }] = httpGET({ url: `${sourceBaseUrl}/api/v1/videos/${videoId}`, parseResponse: true });
+        
+        // Only proceed if the video is live
+        if (!videoData.isLive) {
+            return null;
+        }
+        
+        // Check if the livechat plugin is enabled for this video
+        const hasLiveChat = !!videoData.pluginData?.['livechat-active'];
+        
+        if (!hasLiveChat) {
+            return null;
+        }
+        
+        // Use the correct chat URL format
+        const chatUrl = `${sourceBaseUrl}/p/livechat/room?room=${videoId}`;
+        
+        // Return the chat window configuration
+        return {
+            url: chatUrl,
+            // Remove header elements that might be present in the chat iframe
+            removeElements: ["header.root-header"],
+            // Elements to periodically remove (like banners, etc.)
+            removeElementsInterval: []
+        };
+    } catch (ex) {
+        log("Error getting live chat window:", ex);
+        return null;
+    }
+}
+
 
 // Add PlaybackTracker implementation
+
 source.getPlaybackTracker = function (url) {
 
 	if (!_settings.submitActivity) {
@@ -703,6 +1383,11 @@ source.getPlaybackTracker = function (url) {
 };
 
 //https://docs.joinpeertube.org/api-rest-reference.html#tag/Video/operation/addView
+
+// =============================================================================
+// Pager classes
+// =============================================================================
+
 class PeerTubePlaybackTracker extends PlaybackTracker {
 	/**
 	 * Creates a new PeerTube playback tracker
@@ -777,57 +1462,428 @@ class PeerTubePlaybackTracker extends PlaybackTracker {
 			this.seekOccurred = false;
 		}
 
-		http.POST(url, JSON.stringify(body), {
+		getHttpClient().POST(url, JSON.stringify(body), {
+			...state.defaultHeaders,
 			"Content-Type": "application/json"
 		}, false);
 	}
 }
 
+/**
+ * Paginated video results from a PeerTube instance
+ * @extends VideoPager
+ */
 class PeerTubeVideoPager extends VideoPager {
-	constructor(results, hasMore, path, params, page, sourceHost, isSearch, cbMap) {
-		super(results, hasMore, { path, params, page, sourceHost, isSearch, cbMap });
+	/**
+	 * @param {Array} results - Array of PlatformVideo objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} path - API path
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 * @param {string} sourceHost - Base URL of the PeerTube instance
+	 * @param {boolean} isSearch - Whether this is a search request
+	 * @param {Function} cbMap - Optional mapping callback for results
+	 * @param {boolean} useAuth - Whether to use authenticated requests
+	 */
+	constructor(results, hasMore, path, params, page, sourceHost, isSearch, cbMap, useAuth) {
+		super(results, hasMore, { path, params, page, sourceHost, isSearch, cbMap, useAuth });
 	}
 
+	/** @returns {PeerTubeVideoPager} The next page of video results */
 	nextPage() {
-		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch, this.context.cbMap);
+		return getVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch, this.context.cbMap, this.context.useAuth);
 	}
 }
 
+class PeerTubeMixedVideoPager extends VideoPager {
+	constructor(results, hasMore, localContext, sepiaContext) {
+		super(results, hasMore, { localContext, sepiaContext });
+	}
+
+	nextPage() {
+		const nextLocal = { ...this.context.localContext, page: (this.context.localContext.page ?? 0) + 1 };
+		const nextSepia = { ...this.context.sepiaContext, page: (this.context.sepiaContext.page ?? 0) + 1 };
+		return getMixedVideoPager(nextLocal, nextSepia);
+	}
+}
+
+/**
+ * Paginated channel results from a PeerTube instance
+ * @extends ChannelPager
+ */
 class PeerTubeChannelPager extends ChannelPager {
-	constructor(results, hasMore, path, params, page) {
-		super(results, hasMore, { path, params, page });
+	/**
+	 * @param {Array} results - Array of PlatformAuthorLink objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} path - API path
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 * @param {string} sourceHost - Base URL of the PeerTube instance
+	 * @param {boolean} isSearch - Whether this is a search request
+	 */
+	constructor(results, hasMore, path, params, page, sourceHost, isSearch) {
+		super(results, hasMore, { path, params, page, sourceHost, isSearch });
 	}
 
+	/** @returns {PeerTubeChannelPager} The next page of channel results */
 	nextPage() {
-		return getChannelPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
+		return getChannelPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch);
 	}
 }
 
+/**
+ * Paginated comment results from a PeerTube video
+ * @extends CommentPager
+ */
 class PeerTubeCommentPager extends CommentPager {
+	/**
+	 * @param {Array} results - Array of Comment objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} videoId - The video ID
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 * @param {string} sourceBaseUrl - Base URL of the PeerTube instance
+	 */
 	constructor(results, hasMore, videoId, params, page, sourceBaseUrl) {
 		super(results, hasMore, { videoId, params, page, sourceBaseUrl });
 	}
 
+	/** @returns {PeerTubeCommentPager} The next page of comment results */
 	nextPage() {
 		return getCommentPager(this.context.videoId, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceBaseUrl);
 	}
 }
 
+/**
+ * Paginated playlist results from a PeerTube instance
+ * @extends PlaylistPager
+ */
 class PeerTubePlaylistPager extends PlaylistPager {
+	/**
+	 * @param {Array} results - Array of PlatformPlaylist objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} path - API path
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 * @param {string} sourceHost - Base URL of the PeerTube instance
+	 * @param {boolean} isSearch - Whether this is a search request
+	 */
 	constructor(results, hasMore, path, params, page, sourceHost, isSearch) {
 		super(results, hasMore, { path, params, page, sourceHost, isSearch });
 	}
 
+	/** @returns {PeerTubePlaylistPager} The next page of playlist results */
 	nextPage() {
 		return getPlaylistPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1, this.context.sourceHost, this.context.isSearch);
 	}
 }
 
 /**
- * Build a query
- * @param {{[key: string]: any}} params Query params
- * @returns {String} Query string
+ * Paginated video history results from an authenticated user's watch history
+ * @extends VideoPager
  */
+class PeerTubeHistoryVideoPager extends VideoPager {
+	/**
+	 * @param {Array} results - Array of PlatformVideo objects
+	 * @param {boolean} hasMore - Whether more pages are available
+	 * @param {string} path - API path
+	 * @param {Object} params - Query parameters
+	 * @param {number} page - Current page number
+	 */
+	constructor(results, hasMore, path, params, page) {
+		super(results, hasMore, { path, params, page });
+	}
+
+	/** @returns {PeerTubeHistoryVideoPager} The next page of history results */
+	nextPage() {
+		return getHistoryVideoPager(this.context.path, this.context.params, (this.context.page ?? 0) + 1);
+	}
+}
+
+// =============================================================================
+// Helper functions
+// =============================================================================
+
+/**
+ * Transforms raw PeerTube video API data into PlatformVideo objects with NSFW filtering
+ * @param {Array} data - Raw video data from PeerTube API
+ * @param {boolean} isSearch - Whether these results came from a search request
+ * @param {string} sourceHost - Base URL of the PeerTube instance
+ * @returns {Array} Array of PlatformVideo objects
+ */
+function transformVideoResults(data, isSearch, sourceHost) {
+	const nsfwPolicy = getNSFWPolicy();
+
+	return data
+		.filter(Boolean)
+		.map(v => {
+			const baseUrl = [
+				v.url,
+				v.embedUrl,
+				v.previewUrl,
+				v?.thumbnailUrl,
+				v?.account?.url,
+				v?.channel?.url
+			].filter(Boolean).map(getBaseUrl).find(Boolean);
+
+			const contentUrl = addContentUrlHint(v.url || `${baseUrl}/videos/watch/${v.uuid}`);
+			const instanceBaseUrl = isSearch ? baseUrl : sourceHost;
+			const channelUrl = addChannelUrlHint(v.channel.url);
+
+			const isNSFW = v.nsfw === true;
+			let thumbnails;
+
+			if (isNSFW && nsfwPolicy === "blur") {
+				thumbnails = new Thumbnails([]);
+			} else {
+				thumbnails = new Thumbnails([new Thumbnail(`${instanceBaseUrl}${v.thumbnailPath}`, 0)]);
+			}
+
+			return new PlatformVideo({
+				id: new PlatformID(PLATFORM, v.uuid, config.id),
+				name: v.name ?? "",
+				thumbnails: thumbnails,
+				author: new PlatformAuthorLink(
+					new PlatformID(PLATFORM, v.channel.name, config.id),
+					v.channel.displayName,
+					channelUrl,
+					getAvatarUrl(v, instanceBaseUrl)
+				),
+				datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
+				duration: v.duration,
+				viewCount: v.isLive ? (v.viewers ?? v.views) : v.views,
+				url: contentUrl,
+				isLive: v.isLive
+			});
+		});
+}
+
+/**
+ * Returns the appropriate HTTP client based on impersonation settings
+ * @returns {Object} The HTTP client (httpimp if impersonation is enabled, otherwise http)
+ */
+function getHttpClient() {
+	return (IS_IMPERSONATION_AVAILABLE && _settings?.enableBrowserImpersonation) ? httpimp : http;
+}
+
+/**
+ * Extracts the full description from a video description API response
+ * @param {Object} descriptionResponse - HTTP response containing the full description
+ * @param {string} fallback - Fallback description to use if response is invalid
+ * @returns {string} The full description or the fallback value
+ */
+function getFullDescription(descriptionResponse, fallback) {
+	if (!descriptionResponse || !descriptionResponse.isOk) return fallback;
+	try {
+		const data = JSON.parse(descriptionResponse.body);
+		if (data?.description) return data.description;
+	} catch (e) {
+		// ignore
+	}
+	return fallback;
+}
+
+/**
+ * Processes captions data from API response into GrayJay subtitle format
+ * @param {Object} subtitlesResponse - HTTP response containing captions data
+ * @returns {Array} - Array of subtitle objects or empty array if none available
+ */
+
+function processSubtitlesData(subtitlesResponse) {
+	if (!subtitlesResponse.isOk) {
+		log("Failed to get video subtitles", subtitlesResponse);
+		return [];
+	}
+
+	try {
+
+		const baseUrl = getBaseUrl(subtitlesResponse.url);
+
+		const captionsData = JSON.parse(subtitlesResponse.body);
+		if (!captionsData || !captionsData.data || captionsData.total === 0) {
+			return [];
+		}
+
+		// Convert PeerTube captions to GrayJay subtitle format
+		return captionsData.data
+			.map(caption => {
+
+				const subtitleUrl = caption?.fileUrl
+					?? (caption.captionPath ? `${baseUrl}${caption.captionPath}` : ""); //6.1.0
+
+				return {
+					name: `${caption?.language?.label ?? caption?.language?.id} ${caption.automaticallyGenerated ? "(auto-generated)" : ""}`,
+					url: subtitleUrl,
+					format: "text/vtt",
+					language: caption.language.id
+				};
+			})
+			.filter(caption => caption.url);
+	} catch (e) {
+		log("Error parsing captions data", e);
+		return [];
+	}
+}
+
+/**
+ * Extracts chapter markers from a video's chapters API response
+ * @param {Object} chaptersData - HTTP response containing chapter data
+ * @param {number} videoDuration - Total duration of the video in seconds
+ * @returns {Array<Object>} Array of chapter objects with name, timeStart, timeEnd, and type
+ */
+function extractChapters(chaptersData, videoDuration) {
+	if (!chaptersData || !chaptersData.isOk) return [];
+
+	try {
+		const data = JSON.parse(chaptersData.body);
+		if (!data?.chapters?.length) return [];
+
+		return data.chapters.map(function (chapter, i) {
+			const nextChapter = data.chapters[i + 1];
+			return {
+				name: chapter.title,
+				timeStart: chapter.timecode,
+				timeEnd: nextChapter ? nextChapter.timecode : (videoDuration || 999999),
+				type: Type.Chapter.NORMAL
+			};
+		});
+	} catch (e) {
+		return [];
+	}
+}
+
+/**
+ * Validates if a string is a valid URL
+ * @param {string} str - The string to validate
+ * @returns {boolean} True if the string is a valid URL, false otherwise
+ */
+function isValidUrl(str) {
+	if (typeof str !== 'string') {
+		return false;
+	}
+
+	// Basic URL validation - checks for http:// or https:// and a domain
+	const urlPattern = /^https?:\/\/.+/i;
+	return urlPattern.test(str);
+}
+
+/**
+ * Checks if a URL belongs to the configured base instance
+ * @param {string} url - The URL to check
+ * @returns {boolean} True if the URL is for the base instance
+ */
+
+function isBaseInstanceUrl(url) {
+	if (!url || !plugin?.config?.constants?.baseUrl) {
+		return false;
+	}
+	try {
+		const urlHost = new URL(url).host.toLowerCase();
+		const baseHost = new URL(plugin.config.constants.baseUrl).host.toLowerCase();
+		return urlHost === baseHost;
+	} catch (e) {
+		return false;
+	}
+}
+
+/**
+ * Performs GET request(s) with error handling and optional JSON parsing.
+ * Always returns an array of response objects.
+ *
+ * Single:  const [resp] = httpGET(url)
+ * Parsed:  const [{ body: data }] = httpGET({ url, parseResponse: true })
+ * Batch:   const [r1, r2] = httpGET([url1, url2])
+ *
+ * Each response has the same shape as http.GET(): { isOk, code, body }.
+ * When parseResponse is true, body contains the parsed JSON instead of a string.
+ *
+ * @param {string|Object|Array<string|Object>} optionsOrUrl - URL string, options object, or array for batch
+ * @param {string} optionsOrUrl.url - The URL to call
+ * @param {boolean} [optionsOrUrl.useAuthenticated=false] - Use authenticated headers (base instance only)
+ * @param {boolean} [optionsOrUrl.parseResponse=false] - Parse body as JSON
+ * @param {Object} [optionsOrUrl.headers=null] - Custom headers (defaults to state.defaultHeaders)
+ * @returns {Array<{isOk: boolean, code: number, body: string|Object}>} Array of responses
+ * @throws {ScriptException}
+ */
+
+function httpGET(optionsOrUrl) {
+	const client = getHttpClient();
+
+	if (Array.isArray(optionsOrUrl)) {
+		const batch = client.batch();
+		const parseFlags = [];
+		for (const req of optionsOrUrl) {
+			const isString = typeof req === 'string';
+			const url = isString ? req : req.url;
+			const headers = (isString ? null : req.headers) ?? state.defaultHeaders;
+			const useAuth = !!(req.useAuthenticated && isBaseInstanceUrl(url));
+			parseFlags.push(!isString && !!req.parseResponse);
+			batch.GET(url, headers, useAuth);
+		}
+		const responses = batch.execute();
+		return responses.map((resp, i) => {
+			if (parseFlags[i] && resp.isOk) {
+				const json = JSON.parse(resp.body);
+				if (json.errors) {
+					throw new ScriptException(json.errors[0].message);
+				}
+				return { isOk: resp.isOk, code: resp.code, body: json };
+			}
+			return resp;
+		});
+	}
+
+	let options;
+	if (typeof optionsOrUrl === 'string') {
+		if (!isValidUrl(optionsOrUrl)) {
+			throw new ScriptException("Invalid URL provided: " + optionsOrUrl);
+		}
+		options = { url: optionsOrUrl };
+	} else if (typeof optionsOrUrl === 'object' && optionsOrUrl !== null) {
+		options = optionsOrUrl;
+	} else {
+		throw new ScriptException("httpGET requires a URL string, options object, or array for batch");
+	}
+
+	const {
+		url,
+		useAuthenticated = false,
+		parseResponse = false,
+		headers = null
+	} = options;
+
+	if (!url) {
+		throw new ScriptException("URL is required");
+	}
+
+	const shouldAuthenticate = useAuthenticated && isBaseInstanceUrl(url);
+	const localHeaders = headers ?? state.defaultHeaders;
+
+	const resp = client.GET(url, localHeaders, shouldAuthenticate);
+
+	if (!resp.isOk) {
+		throwIfCaptcha(resp);
+		throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+	}
+
+	if (parseResponse) {
+		const json = JSON.parse(resp.body);
+		if (json.errors) {
+			throw new ScriptException(json.errors[0].message);
+		}
+		return [{ isOk: resp.isOk, code: resp.code, body: json }];
+	}
+
+	return [resp];
+}
+
+/**
+ * Build a query string from parameters (without leading '?').
+ * Callers are responsible for prefixing with '?'.
+ * @param {{[key: string]: any}} params Query params
+ * @returns {string} Query string, e.g. "key=val&key2=val2" or ""
+ */
+
 function buildQuery(params) {
 	let query = "";
 	let first = true;
@@ -858,26 +1914,34 @@ function buildQuery(params) {
 		}
 	}
 
-	return (query && query.length > 0) ? `?${query}` : "";
+	return (query && query.length > 0) ? query : "";
 }
 
+/**
+ * Fetches channels and creates a PeerTubeChannelPager
+ * @param {string} path - The API path to fetch channels from
+ * @param {Object} params - Query parameters
+ * @param {number} page - Page number for pagination
+ * @param {string} sourceHost - The base URL of the PeerTube instance
+ * @param {boolean} isSearch - Whether this is a search request
+ * @returns {PeerTubeChannelPager} Pager for channel results
+ */
 function getChannelPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
 
-	const count = 20;
+	const count = PAGE_SIZE_DEFAULT;
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count }
 
 	const url = `${sourceHost}${path}`;
-	const urlWithParams = `${url}${buildQuery(params)}`;
+	const urlWithParams = `${url}?${buildQuery(params)}`;
 
-	const res = http.GET(urlWithParams, {});
-
-	if (res.code != 200) {
-		log("Failed to get channels", res);
+	let obj;
+	try {
+		[{ body: obj }] = httpGET({ url: urlWithParams, parseResponse: true });
+	} catch (e) {
+		log("Failed to get channels", e);
 		return new ChannelPager([], false);
 	}
-
-	const obj = JSON.parse(res.body);
 
 	return new PeerTubeChannelPager(obj.data.map(v => {
 
@@ -891,28 +1955,39 @@ function getChannelPager(path, params, page, sourceHost = plugin.config.constant
 			v?.followersCount ?? 0
 		);
 
-	}), obj.total > (start + count), path, params, page);
+	}), obj.total > (start + count), path, params, page, sourceHost, isSearch);
 }
 
-function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false, cbMap) {
+/**
+ * Fetches videos and creates a PeerTubeVideoPager with NSFW filtering
+ * @param {string} path - The API path to fetch videos from
+ * @param {Object} params - Query parameters
+ * @param {number} page - Page number for pagination
+ * @param {string} sourceHost - The base URL of the PeerTube instance
+ * @param {boolean} isSearch - Whether this is a search request
+ * @param {Function} [cbMap] - Optional callback to transform each video data item
+ * @param {boolean} [useAuth=false] - Whether to use authenticated requests
+ * @returns {PeerTubeVideoPager} Pager for video results
+ */
+function getVideoPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false, cbMap, useAuth = false) {
 
-	const count = 20;
+	const count = PAGE_SIZE_DEFAULT;
 	const start = (page ?? 0) * count;
-	params = { ...params, start, count }
+	params = { ...params, start, count };
+
+	applyNSFWFilter(params);
 
 	const url = `${sourceHost}${path}`;
 
-	const urlWithParams = `${url}${buildQuery(params)}`;
+	const urlWithParams = `${url}?${buildQuery(params)}`;
 
-	const res = http.GET(urlWithParams, {});
-
-
-	if (res.code != 200) {
-		log("Failed to get videos", res);
+	let obj;
+	try {
+		[{ body: obj }] = httpGET({ url: urlWithParams, useAuthenticated: useAuth, parseResponse: true });
+	} catch (e) {
+		log("Failed to get videos", e);
 		return new VideoPager([], false);
 	}
-
-	const obj = JSON.parse(res.body);
 
 	const hasMore = obj.total > (start + count);
 
@@ -921,69 +1996,114 @@ function getVideoPager(path, params, page, sourceHost = plugin.config.constants.
 		obj.data = obj.data.map(cbMap);
 	}
 
-	const contentResultList = obj.data
-	.filter(Boolean)//playlists may contain null values for private videos
-	.map(v => {
+	const contentResultList = transformVideoResults(obj.data, isSearch, sourceHost);
 
-		const baseUrl = [
-			v.url,
-			v.embedUrl,
-			v.previewUrl,
-			v?.thumbnailUrl,
-			v?.account?.url,
-			v?.channel?.url
-		].filter(Boolean).map(getBaseUrl).find(Boolean);
-
-		//Some older instance versions such as 3.0.0, may not contain the url property
-		// Add URL hints using utility functions
-		const contentUrl = addContentUrlHint(v.url || `${baseUrl}/videos/watch/${v.uuid}`);
-		const instanceBaseUrl = isSearch ? baseUrl : sourceHost;
-		const channelUrl = addChannelUrlHint(v.channel.url);
-		
-		return new PlatformVideo({
-			id: new PlatformID(PLATFORM, v.uuid, config.id),
-			name: v.name ?? "",
-			thumbnails: new Thumbnails([new Thumbnail(`${instanceBaseUrl}${v.thumbnailPath}`, 0)]),
-			author: new PlatformAuthorLink(
-				new PlatformID(PLATFORM, v.channel.name, config.id),
-				v.channel.displayName,
-				channelUrl,
-				getAvatarUrl(v, instanceBaseUrl)
-			),
-			datetime: Math.round((new Date(v.publishedAt)).getTime() / 1000),
-			duration: v.duration,
-			viewCount: v.views,
-			url: contentUrl,
-			isLive: v.isLive
-		});
-
-	});
-
-	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap);
+	return new PeerTubeVideoPager(contentResultList, hasMore, path, params, page, sourceHost, isSearch, cbMap, useAuth);
 }
 
+function getMixedVideoPager(localContext, sepiaContext) {
+	const count = PAGE_SIZE_DEFAULT;
+	const localStart = (localContext.page ?? 0) * count;
+	const sepiaStart = (sepiaContext.page ?? 0) * count;
+
+	const localParams = { ...localContext.params, start: localStart, count };
+	const sepiaParams = { ...sepiaContext.params, start: sepiaStart, count };
+
+	applyNSFWFilter(localParams);
+	applyNSFWFilter(sepiaParams);
+
+	const localUrl = `${localContext.sourceHost}${localContext.path}?${buildQuery(localParams)}`;
+	const sepiaUrl = `${sepiaContext.sourceHost}${sepiaContext.path}?${buildQuery(sepiaParams)}`;
+
+	let localData = [];
+	let sepiaData = [];
+	let localHasMore = false;
+	let sepiaHasMore = false;
+
+	try {
+		const [localResp, sepiaResp] = httpGET([
+			{ url: localUrl, parseResponse: true },
+			{ url: sepiaUrl, parseResponse: true }
+		]);
+
+		if (localResp.isOk && localResp.body?.data) {
+			localData = localResp.body.data;
+			localHasMore = localResp.body.total > (localStart + count);
+		}
+		if (sepiaResp.isOk && sepiaResp.body?.data) {
+			sepiaData = sepiaResp.body.data;
+			sepiaHasMore = sepiaResp.body.total > (sepiaStart + count);
+		}
+	} catch (e) {
+		log("Failed to get mixed videos", e);
+		return new VideoPager([], false);
+	}
+
+	// Transform both sets
+	const localResults = transformVideoResults(localData, false, localContext.sourceHost);
+	const sepiaResults = transformVideoResults(sepiaData, true, sepiaContext.sourceHost);
+
+	// Deduplicate by UUID (prefer local version)
+	const seen = new Set();
+	const merged = [];
+
+	for (const video of [...localResults, ...sepiaResults]) {
+		const uuid = video.id.value;
+		if (!seen.has(uuid)) {
+			seen.add(uuid);
+			merged.push(video);
+		}
+	}
+
+	// Sort merged results according to the user's chosen sort order
+	const sort = localContext.params.sort;
+	if (sort === '-publishedAt' || sort === '-createdAt') {
+		merged.sort((a, b) => b.datetime - a.datetime);
+	} else if (sort === 'publishedAt' || sort === 'createdAt') {
+		merged.sort((a, b) => a.datetime - b.datetime);
+	} else if (sort === '-views') {
+		merged.sort((a, b) => b.viewCount - a.viewCount);
+	} else if (sort === '-likes') {
+		// likes not available on PlatformVideo, fall back to newest
+		merged.sort((a, b) => b.datetime - a.datetime);
+	} else {
+		// best, trending, hot are algorithmic — fall back to newest
+		merged.sort((a, b) => b.datetime - a.datetime);
+	}
+
+	const hasMore = localHasMore || sepiaHasMore;
+	return new PeerTubeMixedVideoPager(merged, hasMore, localContext, sepiaContext);
+}
+
+/**
+ * Fetches comment threads for a video and creates a PeerTubeCommentPager
+ * @param {string} videoId - The video ID to fetch comments for
+ * @param {Object} params - Query parameters
+ * @param {number} page - Page number for pagination
+ * @param {string} sourceBaseUrl - The base URL of the PeerTube instance
+ * @returns {PeerTubeCommentPager} Pager for comment results
+ */
 function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.constants.baseUrl) {
 
-	const count = 20;
+	const count = PAGE_SIZE_DEFAULT;
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count }
 
 	// Build API URL internally
 	const apiPath = `/api/v1/videos/${videoId}/comment-threads`;
 	const apiUrl = `${sourceBaseUrl}${apiPath}`;
-	const urlWithParams = `${apiUrl}${buildQuery(params)}`;
+	const urlWithParams = `${apiUrl}?${buildQuery(params)}`;
 	
 	// Build video URL internally
 	const videoUrl = addContentUrlHint(`${sourceBaseUrl}/videos/watch/${videoId}`);
 	
-	const res = http.GET(urlWithParams, {});
-
-	if (res.code != 200) {
-		log("Failed to get comments", res);
+	let obj;
+	try {
+		[{ body: obj }] = httpGET({ url: urlWithParams, parseResponse: true });
+	} catch (e) {
+		log("Failed to get comments", e);
 		return new CommentPager([], false);
 	}
-
-	const obj = JSON.parse(res.body);
 
 	return new PeerTubeCommentPager(obj.data
 		.filter(v => !v.isDeleted || (v.isDeleted && v.totalReplies > 0)) // filter out deleted comments without replies. TODO: handle soft deleted comments with replies
@@ -1021,22 +2141,23 @@ function getCommentPager(videoId, params, page, sourceBaseUrl = plugin.config.co
  * @param {boolean} isSearch - Whether this is a search request
  * @returns {PlaylistPager} - Pager for playlists
  */
+
 function getPlaylistPager(path, params, page, sourceHost = plugin.config.constants.baseUrl, isSearch = false) {
-	const count = 20;
+	const count = PAGE_SIZE_DEFAULT;
 	const start = (page ?? 0) * count;
 	params = { ...params, start, count };
 
 	const url = `${sourceHost}${path}`;
-	const urlWithParams = `${url}${buildQuery(params)}`;
-	
-	const res = http.GET(urlWithParams, {});
-	
-	if (res.code != 200) {
-		log("Failed to get playlists", res);
+	const urlWithParams = `${url}?${buildQuery(params)}`;
+
+	let obj;
+	try {
+		[{ body: obj }] = httpGET({ url: urlWithParams, parseResponse: true });
+	} catch (e) {
+		log("Failed to get playlists", e);
 		return new PlaylistPager([], false);
 	}
-	
-	const obj = JSON.parse(res.body);
+
 	const hasMore = obj.total > (start + count);
 	
 	const playlistResults = obj.data.map(playlist => {
@@ -1068,6 +2189,47 @@ function getPlaylistPager(path, params, page, sourceHost = plugin.config.constan
 	return new PeerTubePlaylistPager(playlistResults, hasMore, path, params, page, sourceHost, isSearch);
 }
 
+/**
+ * Fetches the authenticated user's video watch history and creates a PeerTubeHistoryVideoPager
+ * @param {string} path - The API path to fetch history from
+ * @param {Object} params - Query parameters
+ * @param {number} page - Page number for pagination
+ * @returns {PeerTubeHistoryVideoPager} Pager for history video results
+ */
+function getHistoryVideoPager(path, params, page) {
+	const count = PAGE_SIZE_HISTORY;
+	const start = (page ?? 0) * count;
+	params = { ...params, start, count };
+
+	const url = `${plugin.config.constants.baseUrl}${path}`;
+	const urlWithParams = `${url}?${buildQuery(params)}`;
+
+	let obj;
+	try {
+		[{ body: obj }] = httpGET({ url: urlWithParams, useAuthenticated: true, parseResponse: true });
+	} catch (e) {
+		log("Failed to get user history", e);
+		return new VideoPager([], false);
+	}
+
+	const results = transformVideoResults(obj.data, true, plugin.config.constants.baseUrl);
+
+	// Attach playback position from watch history
+	for (let i = 0; i < results.length; i++) {
+		const history = obj.data[i]?.userHistory;
+		if (history && history.currentTime) {
+			results[i].playbackTime = history.currentTime;
+		}
+	}
+
+	return new PeerTubeHistoryVideoPager(results, obj.total > (start + count), path, params, page);
+}
+
+/**
+ * Parses a version string into an array of numeric parts
+ * @param {string} version - Version string (e.g. "6.1.0" or "v6.1.0")
+ * @returns {number[]} Array of at least 3 numeric version parts [major, minor, patch]
+ */
 function extractVersionParts(version) {
 	// Convert to string and trim any 'v' prefix
 	const versionStr = String(version).replace(/^v/, '');
@@ -1087,6 +2249,27 @@ function extractVersionParts(version) {
 	return parts;
 }
 
+/**
+ * Extracts the server version string from an instance config API response.
+ * @param {Object} configResponse - HTTP response from /api/v1/config
+ * @returns {string|null} The server version string or null
+ */
+
+function getInstanceVersion(configResponse) {
+	if (!configResponse || !configResponse.isOk) return null;
+	try {
+		return JSON.parse(configResponse.body).serverVersion ?? null;
+	} catch (e) {
+		return null;
+	}
+}
+
+/**
+ * Checks if a server version is the same as or newer than an expected version
+ * @param {string} testVersion - The version to test
+ * @param {string} expectedVersion - The minimum expected version
+ * @returns {boolean} True if testVersion >= expectedVersion
+ */
 function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {
 	// Handle null or undefined inputs
 	if (testVersion == null || expectedVersion == null) {
@@ -1115,6 +2298,7 @@ function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {
 * @param {object} obj  
 * @returns {String} Avatar URL 
 */
+
 function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 
 	const relativePath = [
@@ -1137,6 +2321,36 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 }
 
 /**
+* Find and return the banner URL from various potential locations to support different Peertube instance versions
+* @param {object} obj
+* @param {string} baseUrl - The base URL of the PeerTube instance
+* @returns {String} Banner URL or null if no banner is available
+*/
+
+function getBannerUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
+
+	const relativePath = [
+		// PeerTube v6.0.0+ - banners array (get the largest banner)
+		obj?.banners?.length ? obj.banners[obj.banners.length - 1].path : "",
+		obj?.channel?.banners?.length ? obj.channel.banners[obj.channel.banners.length - 1].path : "",
+		obj?.account?.banners?.length ? obj.account.banners[obj.account.banners.length - 1].path : "",
+		obj?.ownerAccount?.banners?.length ? obj.ownerAccount.banners[obj.ownerAccount.banners.length - 1].path : "",
+		// Legacy single banner support (if it exists in older versions)
+		obj?.banner?.path,
+		obj?.channel?.banner?.path,
+		obj?.account?.banner?.path,
+		obj?.ownerAccount?.banner?.path
+	].find(v => v); // Get the first non-empty value
+
+	if (relativePath) {
+		return `${baseUrl}${relativePath}`;
+	}
+
+	// Return null instead of a fallback banner to maintain clean UI
+	return null;
+}
+
+/**
  * Extracts the base URL (protocol + host) from a given URL string.
  * Validates input and throws appropriate exceptions for invalid URLs.
  * 
@@ -1154,6 +2368,7 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
  * // Throws ScriptException: "Invalid URL format: invalid-url"
  * getBaseUrl("invalid-url");
  */
+
 function getBaseUrl(url) {
     if (typeof url !== 'string') {
         throw new ScriptException('URL must be a string');
@@ -1199,6 +2414,7 @@ function getBaseUrl(url) {
  * @param {string} hintValue - The value for the hint parameter
  * @returns {string} - The URL with the hint parameter added
  */
+
 function addUrlHint(url, hintParam, hintValue = '1') {
     if (!url) {
         return url;
@@ -1225,6 +2441,7 @@ function addUrlHint(url, hintParam, hintValue = '1') {
  * @param {string} url - The video URL
  * @returns {string} - The URL with content hint parameter
  */
+
 function addContentUrlHint(url) {
     return addUrlHint(url, 'isPeertubeContent');
 }
@@ -1234,6 +2451,7 @@ function addContentUrlHint(url) {
  * @param {string} url - The channel URL
  * @returns {string} - The URL with channel hint parameter
  */
+
 function addChannelUrlHint(url) {
     return addUrlHint(url, 'isPeertubeChannel');
 }
@@ -1243,10 +2461,16 @@ function addChannelUrlHint(url) {
  * @param {string} url - The playlist URL
  * @returns {string} - The URL with playlist hint parameter
  */
+
 function addPlaylistUrlHint(url) {
     return addUrlHint(url, 'isPeertubePlaylist');
 }
 
+/**
+ * Extracts channel ID from PeerTube channel URLs
+ * @param {string} url - PeerTube channel URL (e.g. /c/{id}, /video-channels/{id})
+ * @returns {string|null} Channel ID or null if not a valid channel URL
+ */
 function extractChannelId(url) {
 	try {
 		if (!url) return null;
@@ -1255,7 +2479,7 @@ function extractChannelId(url) {
 		const { pathname } = urlTest;
 
 		// Regex to match and extract the channel ID from /c/, /video-channels/, and /api/v1/video-channels/ URLs
-		const match = pathname.match(/^\/(c|video-channels|api\/v1\/video-channels)\/([a-zA-Z0-9-_.]+)(?:\/(video|videos)?)?\/?$/);
+		const match = pathname.match(/^\/(c|video-channels|api\/v1\/video-channels)\/([a-zA-Z0-9-_.@]+)(?:\/(video|videos)?)?\/?$/);
 
 		return match ? match[2] : null; // match[2] contains the extracted channel ID
 	} catch (error) {
@@ -1264,7 +2488,11 @@ function extractChannelId(url) {
 	}
 }
 
-
+/**
+ * Extracts video ID from PeerTube video URLs
+ * @param {string} url - PeerTube video URL (e.g. /w/{id}, /videos/watch/{id})
+ * @returns {string|null} Video ID or null if not a valid video URL
+ */
 function extractVideoId(url) {
 	try {
 		if (!url) return null;
@@ -1287,6 +2515,7 @@ function extractVideoId(url) {
  * @param {string} url - PeerTube playlist URL
  * @returns {string|null} - Playlist ID or null if not a valid playlist URL
  */
+
 function extractPlaylistId(url) {
 	try {
 		if (!url) return null;
@@ -1324,14 +2553,12 @@ function extractPlaylistId(url) {
 	}
 }
 
-
-function loadOptionsForSetting(settingKey, transformCallback) {
-	transformCallback ??= (o) => o;
-	const setting = config?.settings?.find((s) => s.variable == settingKey);
-	return setting?.options?.map(transformCallback) ?? [];
-}
-
-
+/**
+ * Creates an AudioUrlSource from a PeerTube file object
+ * @param {Object} file - PeerTube file object with resolution and URL info
+ * @param {number} duration - Duration of the audio in seconds
+ * @returns {AudioUrlSource} Audio source descriptor
+ */
 function createAudioSource(file, duration) {
 	return new AudioUrlSource({
 		name: file.resolution.label,
@@ -1342,7 +2569,12 @@ function createAudioSource(file, duration) {
 	});
 }
 
-// Create video source based on file and resolution
+/**
+ * Creates a VideoUrlSource from a PeerTube file object with resolution lookup
+ * @param {Object} file - PeerTube file object with resolution and URL info
+ * @param {number} duration - Duration of the video in seconds
+ * @returns {VideoUrlSource} Video source descriptor
+ */
 function createVideoSource(file, duration) {
 	const supportedResolution = file.resolution.width && file.resolution.height
 		? { width: file.resolution.width, height: file.resolution.height }
@@ -1358,6 +2590,11 @@ function createVideoSource(file, duration) {
 	});
 }
 
+/**
+ * Builds a media source descriptor from a PeerTube video object, handling HLS, muxed, unmuxed, and audio-only sources
+ * @param {Object} obj - PeerTube video object containing streamingPlaylists and files
+ * @returns {VideoSourceDescriptor|UnMuxVideoSourceDescriptor} Media source descriptor for playback
+ */
 function getMediaDescriptor(obj) {
 
 	let inputFileSources = [];
@@ -1370,12 +2607,25 @@ function getMediaDescriptor(obj) {
 
 	for (const playlist of (obj?.streamingPlaylists ?? [])) {
 
-		hlsOutputSources.push(new HLSSource({
+		const hlsSourceOpts = {
 			name: "HLS",
 			url: playlist.playlistUrl,
 			duration: obj.duration ?? 0,
 			priority: true
-		}));
+		};
+
+		if (IS_IMPERSONATION_AVAILABLE && _settings?.enableBrowserImpersonation) {
+			hlsSourceOpts.requestModifier = {
+				options: {
+					applyAuthClient: "",
+					applyCookieClient: "",
+					applyOtherHeaders: false,
+					impersonateTarget: IMPERSONATION_TARGET
+				}
+			};
+		}
+
+		hlsOutputSources.push(new HLSSource(hlsSourceOpts));
 
 		// exclude transcoded files for now due to some incompatibility issues (no length metadata (invalid duration on android devices) and performance issues loading the files on desktop
 		// those are the same videos used for HLS
@@ -1427,1449 +2677,178 @@ function getMediaDescriptor(obj) {
 	}
 }
 
+
+/**
+ * Creates a PlatformPlaylistDetails from a PeerTube tag search URL
+ * @param {string} url - Tag search URL containing a tagsOneOf parameter
+ * @returns {PlatformPlaylistDetails|null} Playlist details for the tag, or null on failure
+ */
+function getTagPlaylist(url) {
+	try {
+		const urlObj = new URL(url);
+		const sourceBaseUrl = `${urlObj.protocol}//${urlObj.host}`;
+		const tagsOneOf = urlObj.searchParams.get('tagsOneOf');
+
+		if (!tagsOneOf) {
+			return null;
+		}
+
+		// Create playlist URL with hint
+		const playlistUrl = `${url}&isPeertubeTagSearch=1`;
+
+		return new PlatformPlaylistDetails({
+			id: new PlatformID(PLATFORM, `tag-${tagsOneOf}`, config.id),
+			name: `Tag: ${tagsOneOf}`,
+			author: new PlatformAuthorLink(
+				new PlatformID(PLATFORM, "tags", config.id),
+				sourceBaseUrl.replace(/^https?:\/\//, ''),
+				sourceBaseUrl,
+				null
+			),
+			thumbnail: null,
+			videoCount: -1,
+			url: playlistUrl,
+			contents: getVideoPager(
+				'/api/v1/search/videos',
+				{
+					tagsOneOf: tagsOneOf,
+					sort: '-match',
+					searchTarget: 'local'
+				},
+				0,
+				sourceBaseUrl,
+				true
+			)
+		});
+	} catch (e) {
+		log("Error creating tag playlist", e);
+		return null;
+	}
+}
+
+/**
+ * Maps a category setting index to a PeerTube category ID
+ * @param {number|string} categoryIndex - Index from settings (1-18 map to category IDs)
+ * @returns {string|null} Category ID string or null if index is out of range
+ */
+function getCategoryId(categoryIndex) {
+	// Convert index to category ID
+	// Index 0 = "" (no category), Index 1 = "1" (Music), Index 2 = "2" (Films), etc.
+
+	const index = parseInt(categoryIndex);
+
+	if (index >= 1 && index <= 18) {
+		return index.toString();
+	}
+	return null;
+}
+
+/**
+ * Maps a language setting index to an ISO language code
+ * @param {number|string} languageIndex - Index from settings (1-37 map to language codes)
+ * @returns {string|null} ISO language code or null if index is out of range
+ */
+function getLanguageCode(languageIndex) {
+	const languageMap = [
+		"", // Index 0 = empty
+		"en", // Index 1 = English
+		"fr", // Index 2 = Français
+		"ar", // Index 3 = العربية
+		"ca", // Index 4 = Català
+		"cs", // Index 5 = Čeština
+		"de", // Index 6 = Deutsch
+		"el", // Index 7 = ελληνικά
+		"eo", // Index 8 = Esperanto
+		"es", // Index 9 = Español
+		"eu", // Index 10 = Euskara
+		"fa", // Index 11 = فارسی
+		"fi", // Index 12 = Suomi
+		"gd", // Index 13 = Gàidhlig
+		"gl", // Index 14 = Galego
+		"hr", // Index 15 = Hrvatski
+		"hu", // Index 16 = Magyar
+		"is", // Index 17 = Íslenska
+		"it", // Index 18 = Italiano
+		"ja", // Index 19 = 日本語
+		"kab", // Index 20 = Taqbaylit
+		"nl", // Index 21 = Nederlands
+		"no", // Index 22 = Norsk
+		"oc", // Index 23 = Occitan
+		"pl", // Index 24 = Polski
+		"pt", // Index 25 = Português (Brasil)
+		"pt-PT", // Index 26 = Português (Portugal)
+		"ru", // Index 27 = Pусский
+		"sk", // Index 28 = Slovenčina
+		"sq", // Index 29 = Shqip
+		"sv", // Index 30 = Svenska
+		"th", // Index 31 = ไทย
+		"tok", // Index 32 = Toki Pona
+		"tr", // Index 33 = Türkçe
+		"uk", // Index 34 = украї́нська мо́ва
+		"vi", // Index 35 = Tiếng Việt
+		"zh-Hans", // Index 36 = 简体中文（中国）
+		"zh-Hant" // Index 37 = 繁體中文（台灣）
+	];
+
+	const index = parseInt(languageIndex);
+	if (index >= 1 && index < languageMap.length) {
+		return languageMap[index];
+	}
+	return null;
+}
+
+
+
+/**
+ * Returns the user's NSFW content policy from settings
+ * @returns {string} The NSFW policy: "do_not_list", "blur", or "display"
+ */
+function getNSFWPolicy() {
+	const policyIndex = parseInt(_settings.nsfwPolicy) || 0;
+	const policies = ["do_not_list", "blur", "display"];
+	return policies[policyIndex] || "do_not_list";
+}
+
+/**
+ * Sets the nsfw query parameter on params based on the user's NSFW policy,
+ * unless an explicit nsfw value is already set.
+ * @param {Object} params - Query parameters object to modify in place
+ */
+function applyNSFWFilter(params) {
+	if (params.hasOwnProperty('nsfw')) return;
+	const nsfwPolicy = getNSFWPolicy();
+	params.nsfw = nsfwPolicy === "do_not_list" ? 'false' : 'both';
+}
+
+/**
+ * Throws a CaptchaRequiredException if the response contains a Cloudflare challenge.
+ * Only active when the Cloudflare captcha setting is enabled.
+ * @param {Object} resp - The HTTP response object
+ * @throws {CaptchaRequiredException} If the response body contains a captcha challenge
+ */
+
+function throwIfCaptcha(resp) {
+	if (!_settings.enableCloudflareCaptcha) return;
+	if (resp?.body && resp?.code == 403) {
+		if (/Just a moment\.\.\./i.test(resp.body)) {
+			throw new CaptchaRequiredException(resp.url, resp.body);
+		}
+	}
+}
+
+log("loaded");
+
 // Those instances were requested by users
 // Those hostnames are exclusively used to help the plugin know if a hostname is a PeerTube instance
 // Grayjay nor futo are associated, does not endorse or are responsible for the content in those instances.
 INDEX_INSTANCES.instances = [
 	...INDEX_INSTANCES.instances,'poast.tv','videos.upr.fr','peertube.red'
 ]
-
 // BEGIN AUTOGENERATED INSTANCES
-// This content is autogenerated during deployment using update-instances.sh and content from https://instances.joinpeertube.org
+// This content is autogenerated during deployment using update-instances.sh
+// Sources: https://instances.joinpeertube.org, https://api.fediverse.observer/, and https://api.fedidb.org/
 // Those hostnames are exclusively used to help the plugin know if a hostname is a PeerTube instance
 // Grayjay nor futo are associated, does not endorse or are responsible for the content in those instances.
-// Last updated at: 2025-07-12
-INDEX_INSTANCES.instances = [
-	...INDEX_INSTANCES.instances,
-    "video.blinkyparts.com",
-    "vid.chaoticmira.gay",
-    "peertube.nthpyro.dev",
-    "watch.bojidar-bg.dev",
-    "video.macver.org",
-    "video.mpei.ru",
-    "tube.ynm.hu",
-    "videos.tusnio.me",
-    "video.maechler.cloud",
-    "media.opendigital.info",
-    "peertube.headcrashing.eu",
-    "video.d20.social",
-    "video.manu.quebec",
-    "stream.indieagora.com",
-    "video.typesafe.org",
-    "video.aria.dog",
-    "videos.lacontrevoie.fr",
-    "peertube.heise.de",
-    "peertube.zanoni.top",
-    "tubefree.org",
-    "peertube.nomagic.uk",
-    "meyon.com.ye",
-    "peertube.dsdrive.fr",
-    "arkm.tv",
-    "pt.teloschistes.ch",
-    "videos.livewyre.org",
-    "vuna.no",
-    "peertube.june.ie",
-    "peerate.fr",
-    "videos.weaponisedautism.com",
-    "kiddotube.com",
-    "media.pelin.top",
-    "video.aus-der-not-darmstadt.org",
-    "techlore.tv",
-    "video.bsrueti.ch",
-    "tube.blahaj.zone",
-    "www.aishaalrasheedmosque.tv",
-    "tiktube.com",
-    "videos.iut-orsay.fr",
-    "2tonwaffle.tv",
-    "vods.198x.eu",
-    "videos.gaboule.com",
-    "tube.lins.me",
-    "tv.raslavice.sk",
-    "peertube.securelab.eu",
-    "humanreevolution.com",
-    "tube.destiny.boats",
-    "peertube.casasnow.noho.st",
-    "tv.ruesche.de",
-    "videos.mgnosv.org",
-    "peertube.dcldesign.co.uk",
-    "peertube.daemonlord.freeddns.org",
-    "angeltales.angellive.ru",
-    "peertube.m2.nz",
-    "youtube.n-set.ru",
-    "watch.vinbrun.com",
-    "video.vaku.org.ua",
-    "live.dcnh.cloud",
-    "weare.dcnh.tv",
-    "videos.capas.se",
-    "tube.sleeping.town",
-    "video.sethgoldstein.me",
-    "mytube.pyramix.ca",
-    "christube.malyon.co.uk",
-    "peertube.bekucera.uk",
-    "utube.ro",
-    "tube.gaiac.io",
-    "tarchivist.drjpdns.com",
-    "videos.fairetilt.co",
-    "nuobodu.space",
-    "peertube.bgeneric.net",
-    "videos.elenarossini.com",
-    "peertube33.ethibox.fr",
-    "tube.ofloo.io",
-    "vids.mariusdavid.fr",
-    "peertube.eb8.org",
-    "praxis.tube",
-    "peertube.coderbunker.ca",
-    "praxis.su",
-    "videos.im.allmendenetz.de",
-    "peertube.smertrios.com",
-    "video.xaetacore.net",
-    "v.j4.lc",
-    "video.cats-home.net",
-    "videoteca.ibict.br",
-    "pire.artisanlogiciel.net",
-    "vid.femboyfurry.net",
-    "watch.nuked.social",
-    "peertube.lykle.stellarhosted.com",
-    "mirtube.ru",
-    "styxhexenhammer666.com",
-    "tube.wolfe.casa",
-    "christian.freediverse.com",
-    "peertube.doronichi.com",
-    "video.blueline.mg",
-    "peertube.metalphoenix.synology.me",
-    "tube.4e6a.ru",
-    "videos.ookami.space",
-    "media.caladona.org",
-    "darkvapor.nohost.me",
-    "video.qoto.org",
-    "nvsk.tube",
-    "audio.freediverse.com",
-    "tube.benzo.online",
-    "video.phyrone.de",
-    "eburg.tube",
-    "piter.tube",
-    "mosk.tube",
-    "vid.fbxl.net",
-    "tube.sador.me",
-    "peertube.jimmy-b.se",
-    "freediverse.com",
-    "cubetube.tv",
-    "www.wtfayla.com",
-    "video.kyzune.com",
-    "peertube.boger.dev",
-    "tube.inlinestyle.it",
-    "tube.sanguinius.dev",
-    "planetube.live",
-    "videos.spacefun.ch",
-    "asantube.stream",
-    "peertube.baptistentiel.nl",
-    "partners.eqtube.org",
-    "tube.kjernsmo.net",
-    "rofl.im",
-    "peertube.orderi.co",
-    "tv.solarpunk.land",
-    "peertube.diem25.ynh.fr",
-    "peertube.2tonwaffle.com",
-    "runeclaw.net",
-    "peertube.graafschapcollege.nl",
-    "peertube.delta0189.xyz",
-    "videos.rights.ninja",
-    "peertube.ii.md",
-    "peertube.gyatt.cc",
-    "peertube.cratonsed.ge",
-    "st.fdel.moe",
-    "tube.statyvka.org.ua",
-    "peertube.chn.moe",
-    "tube.giesing.space",
-    "peertube.lab.how",
-    "tube.bremen-social-sciences.de",
-    "video.aokami.codelib.re",
-    "peertube.zveronline.ru",
-    "pt.secnd.me",
-    "mv.vannilla.org",
-    "peertube.teutronic-services.de",
-    "video.interru.io",
-    "tube.loping.net",
-    "peertube.joby.lol",
-    "lyononline.dev",
-    "matte.fedihost.io",
-    "peertube.jmsquared.net",
-    "store.tadreb.live",
-    "video.exon.name",
-    "tube.io18.eu",
-    "eleison.eu",
-    "resist.video",
-    "vidz.antifa.club",
-    "video.tsundere.love",
-    "peertube.katholisch.social",
-    "peertube.mldchan.dev",
-    "peertube.chaunchy.com",
-    "video.progressiv.dev",
-    "peertube.revelin.fr",
-    "tube.fediverse.games",
-    "breeze.tube",
-    "peertube.inparadise.se",
-    "videos.arretsurimages.net",
-    "peertube.themcgovern.net",
-    "dev.itvplus.iiens.net",
-    "peertube.noiz.co.za",
-    "exatas.tv",
-    "videos.noeontheend.com",
-    "peertube.ekosystems.fr",
-    "mirror.peertube.metalbanana.net",
-    "teregarde.icu",
-    "peertube.cif.su",
-    "peertube.la-famille-muller.fr",
-    "peertube.diplopode.net",
-    "v.kyaru.xyz",
-    "video.grenat.art",
-    "video.espr.cloud",
-    "video.toby3d.me",
-    "tube.risedsky.ovh",
-    "video.csc49.fr",
-    "videos.squat.net",
-    "video.habets.io",
-    "peertube.sieprawski.pl",
-    "peer.i6p.ru",
-    "peertube.woitschetzki.de",
-    "edflix.nl",
-    "stream.homelab.gabb.fr",
-    "videos.ubuntu-paris.org",
-    "vid.suqu.be",
-    "tube.homelab.officebot.io",
-    "test.staging.fedihost.co",
-    "peertube.waima.nu",
-    "peertube.iriseden.eu",
-    "video.greenmycity.eu",
-    "video.caruso.one",
-    "peertube.2i2l.net",
-    "tube.straub-nv.de",
-    "media.selector.su",
-    "peertube.0011.lt",
-    "video.kinkyboyspodcast.com",
-    "peertube.30p87.de",
-    "video.chadwaltercummings.me",
-    "video.benedetta.com.br",
-    "tube.hunterjozwiak.com",
-    "media.privacyinternational.org",
-    "videomensoif.ynh.fr",
-    "video.blender.org",
-    "pon.tv",
-    "peertube.nekosunevr.co.uk",
-    "videos.gamolf.fr",
-    "videos.apprendre-delphi.fr",
-    "peertube.ecsodikas.eu",
-    "video.fosshq.org",
-    "live.zawiya.one",
-    "peertube.pnpde.social",
-    "peer.pvddhhnk.nl",
-    "peertube.spaceships.me",
-    "peertube.mgtow.pl",
-    "peertube.guiofamily.fr",
-    "softlyspoken.taylormadetech.dev",
-    "tv.kreuder.me",
-    "vid.involo.ch",
-    "vid.freedif.org",
-    "peertube.kalua.im",
-    "peertube.flauschbereich.de",
-    "live.oldskool.fi",
-    "videos.nerdout.online",
-    "peertube.xn--gribschi-o4a.ch",
-    "video.asturias.red",
-    "vid.mawuki.de",
-    "tube.ssh.club",
-    "video.zlinux.ru",
-    "publicvideo.nl",
-    "beartrix-peertube-u29672.vm.elestio.app",
-    "platt.video",
-    "v0.trm.md",
-    "prtb.komaniya.work",
-    "peertube.funkfeuer.at",
-    "pt.scrunkly.cat",
-    "tv.adn.life",
-    "gnulinux.tube",
-    "feditubo.yt",
-    "video.nluug.nl",
-    "v.mbius.io",
-    "video.birkeundnymphe.de",
-    "videa.inspirujici.cz",
-    "watch.oroykhon.ru",
-    "play.kryta.app",
-    "peertube.arnhome.ovh",
-    "video.cartoon-aa.xyz",
-    "peertube.axiom-paca.g1.lu",
-    "video.stuve-bamberg.de",
-    "tube.gummientenmann.de",
-    "bitforged.stream",
-    "v.blustery.day",
-    "vibeos.grampajoe.online",
-    "we.haydn.rocks",
-    "tube.cybertopia.xyz",
-    "peertube.plaureano.nohost.me",
-    "peertube.chartilacorp.ru",
-    "p.efg-ober-ramstadt.de",
-    "tube.bsd.cafe",
-    "peertube-ardlead-u29325.vm.elestio.app",
-    "avantwhatever.xyz",
-    "andyrush.fedihost.io",
-    "bridport.tv",
-    "tube.raccoon.quest",
-    "yt.orokoro.ru",
-    "peertube.astrolabe.coop",
-    "peertube.kameha.click",
-    "film.fjerland.no",
-    "peertube.fedihub.online",
-    "video.cybersystems.engineer",
-    "tube.gi-it.de",
-    "video.pizza.enby.city",
-    "kviz.leemoon.network",
-    "bideoak.zeorri.eus",
-    "play.shirtless.gay",
-    "video.codefor.de",
-    "video.niboe.info",
-    "play-my.video",
-    "woodland.video",
-    "tube.le-gurk.de",
-    "video.gyt.is",
-    "puptube.rodeo",
-    "peertube.yujiri.xyz",
-    "v.esd.cc",
-    "streamarchive.manicphase.me",
-    "peertube.h-u.social",
-    "nethack.tv",
-    "vids.krserv.social",
-    "peertube.monicz.dev",
-    "exquisite.tube",
-    "videos.devteams.at",
-    "misnina.tv",
-    "video.franzgraf.de",
-    "peertubevdb.de",
-    "peertube.rlp.schule",
-    "videos.jevalide.ca",
-    "mevideo.host",
-    "kiwi.froggirl.club",
-    "wur.pm",
-    "telegenic.talesofmy.life",
-    "stream.conesphere.cloud",
-    "see.ellipsenpark.de",
-    "tube.fulda.social",
-    "video.edu.nl",
-    "yuitobe.wikiwiki.li",
-    "video.magical.fish",
-    "video.akk.moe",
-    "retvrn.tv",
-    "tube.swee.codes",
-    "sc07.tv",
-    "beta.flimmerstunde.xyz",
-    "peertube.g2od.ch",
-    "vidz.dou.bet",
-    "ballhaus.media",
-    "peertube.waldstepperbu.de",
-    "m.bbbdn.jp",
-    "regarder.sans.pub",
-    "studio.lrnz.it",
-    "tv.nizika.tv",
-    "tv.anarchy.bg",
-    "v1.smartit.nu",
-    "peertube.anzui.dev",
-    "sfba.video",
-    "play.rejas.se",
-    "peertube.xrcb.cat",
-    "stream.nuemedia.se",
-    "media.mzhd.de",
-    "media.curious.bio",
-    "peertube-ecogather-u20874.vm.elestio.app",
-    "video.na-prostem.si",
-    "media.smz-ma.de",
-    "tube.bit-friends.de",
-    "peertube.ucy.de",
-    "peer.philoxweb.be",
-    "ohayo.rally.guide",
-    "media.notfunk.radio",
-    "mystic.video",
-    "video.linc.systems",
-    "vid.ohboii.de",
-    "ysm.info",
-    "peertube.musicstudio.pro",
-    "peertube-ktgou-u11537.vm.elestio.app",
-    "peertube.dubwise.dk",
-    "peertube.1984.cz",
-    "tube.aetherial.xyz",
-    "video.olisti.co",
-    "videowisent.maw.best",
-    "peertube.automat.click",
-    "all.electric.kitchen",
-    "peertube.eqver.se",
-    "video.veen.world",
-    "leffler.video",
-    "tubocatodico.bida.im",
-    "peertube.asp.krakow.pl",
-    "video.xorp.hu",
-    "video.anaproy.nl",
-    "video.mikepj.dev",
-    "vods.juni.tube",
-    "video.fnordkollektiv.de",
-    "vid.ryg.one",
-    "peertube.tspu.edu.ru",
-    "peertube.public.cat",
-    "video.mentality.rip",
-    "peertube.tspu.ru",
-    "video.coffeebean.social",
-    "faf.watch",
-    "videos.erg.be",
-    "tube.trax.im",
-    "peertube.bingo-ev.de",
-    "www.piratentube.de",
-    "outcast.am",
-    "librepoop.de",
-    "videos.avency.de",
-    "watch.eeg.cl.cam.ac.uk",
-    "intratube-u25541.vm.elestio.app",
-    "ibbwstream.schule-bw.de",
-    "video.starysacz.um.gov.pl",
-    "video.apz.fi",
-    "peertube.lhc.lu",
-    "peertube.louisematic.site",
-    "mountaintown.video",
-    "cfnumerique.tv",
-    "tube.xd0.de",
-    "peertube.020.pl",
-    "tuvideo.encanarias.info",
-    "tube.buchstoa-tv.at",
-    "tube.moep.tv",
-    "tv.lumbung.space",
-    "kamtube.ru",
-    "peertube.terranout.mine.nu",
-    "video.angrynerdspodcast.nl",
-    "tv.animalcracker.art",
-    "video.emergeheart.info",
-    "tube.2hyze.de",
-    "video.wszystkoconajwazniejsze.pl",
-    "go3.site",
-    "mediathek.rzgierskopp.de",
-    "video.076.ne.jp",
-    "media.mwit.ac.th",
-    "peertube.nighty.name",
-    "tube.hamakor.org.il",
-    "peertube.local.tilera.xyz",
-    "tube.infrarotmedien.de",
-    "peertube.existiert.ch",
-    "classe.iro.umontreal.ca",
-    "videos-libr.es",
-    "tube.beit.hinrichs.cc",
-    "stream.udk-berlin.de",
-    "videos.irrelevant.me.uk",
-    "peertube.gravitywell.xyz",
-    "tube.matrix.rocks",
-    "peertube.lyclpg.itereva.pf",
-    "canard.tube",
-    "tube.ar.hn",
-    "tube.pari.cafe",
-    "video.pavel-english.ru",
-    "tube.unif.app",
-    "tube.fedisphere.net",
-    "pt.nijbakker.net",
-    "video.boxingpreacher.net",
-    "tube.mfraters.net",
-    "video.lunago.net",
-    "tv.zonepl.net",
-    "tueb.telent.net",
-    "peertube.aukfood.net",
-    "stream.andersonr.net",
-    "video.thoshis.net",
-    "peertube.winscloud.net",
-    "video.gemeinde-pflanzen.net",
-    "peertube.unixweb.net",
-    "tv.cuates.net",
-    "tube.me.jon-e.net",
-    "peertube.nadeko.net",
-    "videos.espitallier.net",
-    "peertube.parenti.net",
-    "tube.govital.net",
-    "peertube.monlycee.net",
-    "videos.fozfuncs.com",
-    "peertube.troback.com",
-    "peertube.marcelsite.com",
-    "christuncensored.com",
-    "foubtube.com",
-    "peertube.dixvaha.com",
-    "peertube.tangentfox.com",
-    "video.consultatron.com",
-    "vids.ttlmakerspace.com",
-    "peertube.offerman.com",
-    "v.eurorede.com",
-    "tv.speleo.mooo.com",
-    "videos.ardmoreleader.com",
-    "peertube.anija.mooo.com",
-    "watch.weanimatethings.com",
-    "video.foofus.com",
-    "tube.whytheyfight.com",
-    "videos.tiffanysostar.com",
-    "peertube.anasodon.com",
-    "flappingcrane.com",
-    "video.worteks.com",
-    "video.elfhosted.com",
-    "peertube.becycle.com",
-    "videos.pkutalk.com",
-    "peertube.martiabernathey.com",
-    "pt.sarahgebauer.com",
-    "videos.hardcoredevs.com",
-    "literatube.com",
-    "peertube.intrapology.com",
-    "wtfayla.com",
-    "videos.monstro1.com",
-    "video.expiredpopsicle.com",
-    "video.sadrarin.com",
-    "videos.kuoushi.com",
-    "videotube.duckdns.org",
-    "vid.fossdle.org",
-    "tube.chach.org",
-    "pfideo.pfriedma.org",
-    "video.lmika.org",
-    "video.writeas.org",
-    "video.arghacademy.org",
-    "media.over-world.org",
-    "video.ozgurkon.org",
-    "media.geekwisdom.org",
-    "tube.polytech-reseau.org",
-    "peertubecz.duckdns.org",
-    "peertube.cuatrolibertades.org",
-    "videos.chardonsbleus.org",
-    "peertube.protagio.org",
-    "peertube.boc47.org",
-    "videos.tfcconnection.org",
-    "raptube.antipub.org",
-    "video.fhtagn.org",
-    "watch.tacticaltech.org",
-    "sermons.luctorcrc.org",
-    "video.poul.org",
-    "videos.capitoledulibre.org",
-    "tube.waag.org",
-    "linhtran.eu",
-    "tv.kobold-cave.eu",
-    "peertube.fediversity.eu",
-    "video.brothertec.eu",
-    "tube.freeit247.eu",
-    "notretube.asselma.eu",
-    "peertube.hizkia.eu",
-    "video.ngi.eu",
-    "video.procolix.eu",
-    "peertube.rokugan.fr",
-    "video.nuage-libre.fr",
-    "tube.balamb.fr",
-    "video.cm-en-transition.fr",
-    "peertube.nuage-libre.fr",
-    "peertube.am-networks.fr",
-    "video.dhamdomum.ynh.fr",
-    "video.hainry.fr",
-    "video.mobile-adenum.fr",
-    "video.pizza.ynh.fr",
-    "tube.chaun14.fr",
-    "peertube.linsurgee.fr",
-    "tube.alphonso.fr",
-    "video.ploss-ra.fr",
-    "peertube.pablopernot.fr",
-    "peer.azurs.fr",
-    "tube.fdn.fr",
-    "tube.laurent-malys.fr",
-    "videos.ahp-numerique.fr",
-    "www.makertube.net",
-    "www.earthclimate.tv",
-    "videos.abnormalbeings.space",
-    "videos.phegan.live",
-    "clip.place",
-    "video.patiosocial.es",
-    "peertube.florentcurk.com",
-    "peertube.craftum.pl",
-    "yt.lostpod.space",
-    "video.kompektiva.org",
-    "peertube.pogmom.me",
-    "koreus.tv",
-    "videos.brookslawson.com",
-    "earthclimate.tv",
-    "peertube.havesexwith.men",
-    "video.firesidefedi.live",
-    "video2.echelon.pl",
-    "video.echelon.pl",
-    "piped.chrisco.me",
-    "video.mshparisnord.fr",
-    "vid.nsf-home.ip-dynamic.org",
-    "video.collectifpinceoreilles.com",
-    "tube.pompat.us",
-    "peertube.rhoving.com",
-    "peertube.jarmvl.net",
-    "video.innovationhub-act.org",
-    "peertube.zalasur.media",
-    "video.colmaris.fr",
-    "tube.tkzi.ru",
-    "peertube.wtf",
-    "video.voiceover.bar",
-    "video.balfolk.social",
-    "videos.spacebar.ca",
-    "videos.pixelpost.uk",
-    "video.3cmr.fr",
-    "810video.com",
-    "peertube.iz5wga.radio",
-    "peertube-wb4xz-u27447.vm.elestio.app",
-    "peertube.blablalinux.be",
-    "videos.triceraprog.fr",
-    "videos.ikacode.com",
-    "video.silex.me",
-    "videos.libervia.org",
-    "video.383.su",
-    "peertube.apse-asso.fr",
-    "video.riquy.dev",
-    "video.infiniteloop.tv",
-    "peertube.casually.cat",
-    "media.nolog.cz",
-    "peertube.sjml.de",
-    "tube.niel.me",
-    "video.beartrix.au",
-    "sizetube.com",
-    "video.omniatv.com",
-    "video.selea.se",
-    "video.sorokin.music",
-    "hitchtube.fr",
-    "quantube.win",
-    "peertube.shilohnewark.org",
-    "content.haacksnetworking.org",
-    "videos.conferences-gesticulees.net",
-    "blurt.media",
-    "video.davejansen.com",
-    "wacha.punks.cc",
-    "vhsky.cz",
-    "video.magikh.fr",
-    "tube.g1sms.fr",
-    "video.fedihost.co",
-    "tube.systemz.pl",
-    "videos.80px.com",
-    "video.adamwilbert.com",
-    "video.turbo-kermis.fr",
-    "video.sidh.bzh",
-    "dalek.zone",
-    "peertube.dtth.ch",
-    "video.millironx.com",
-    "video.onjase.quebec",
-    "peertube.apcraft.jp",
-    "video.4d2.org",
-    "peertube.qontinuum.space",
-    "video.floor9.com",
-    "video.xmpp-it.net",
-    "cuddly.tube",
-    "video.lala.ovh",
-    "peertube.mesnumeriques.fr",
-    "tube.artvage.com",
-    "neshweb.tv",
-    "video.osgeo.org",
-    "vid.digitaldragon.club",
-    "lone.earth",
-    "tube.uncomfortable.business",
-    "meshtube.net",
-    "peertube.cluster.wtf",
-    "pt.minhinprom.ru",
-    "peertube.eticadigital.eu",
-    "p.nintendojo.fr",
-    "watch.ocaml.org",
-    "pbvideo.ru",
-    "peertube.nashitut.ru",
-    "peertube.wirenboard.com",
-    "peertube.ra.no",
-    "gultsch.video",
-    "video.076.moe",
-    "peertube.br0.fr",
-    "video.laotra.red",
-    "peertube.cube4fun.net",
-    "tube.sadlads.com",
-    "video.tryptophonic.com",
-    "peertube.vhack.eu",
-    "tube.sector1.fr",
-    "peertube.sensin.eu",
-    "video.mondoweiss.net",
-    "tube.sbcloud.cc",
-    "tube.techeasy.org",
-    "varis.tv",
-    "tube.yapbreak.fr",
-    "video.thinkof.name",
-    "peertube.get-racing.de",
-    "play.dfri.se",
-    "tube.purser.it",
-    "videos.ananace.dev",
-    "videos.shendrick.net",
-    "tube.teckids.org",
-    "video.windfluechter.org",
-    "media.assassinate-you.net",
-    "xn--fsein-zqa5f.xn--nead-na-bhfinleog-hpb.ie",
-    "videos.adhocmusic.com",
-    "video.fabriquedelatransition.fr",
-    "peertube.eus",
-    "video.medienzentrum-harburg.de",
-    "lucarne.balsamine.be",
-    "tube.thechangebook.org",
-    "hpstube.fr",
-    "vidz.julien.ovh",
-    "tube.anufrij.de",
-    "video.mycrowd.ca",
-    "videos.draculo.net",
-    "seka.pona.la",
-    "tv.dyne.org",
-    "cumraci.tv",
-    "peertube.zmuuf.org",
-    "peertube.logilab.fr",
-    "peertube.alpharius.io",
-    "peertube.familie-berner.de",
-    "tv.pirateradio.social",
-    "tube.archworks.co",
-    "peer.acidfog.com",
-    "peertube.meditationsteps.org",
-    "videohaven.com",
-    "tube.vencabot.com",
-    "video.europalestine.com",
-    "k-pop.22x22.ru",
-    "den.wtf",
-    "friprogramvarusyndikatet.tv",
-    "tube.pifferi.io",
-    "v.pizda.world",
-    "tube.sasek.tv",
-    "vid.jittr.click",
-    "video.mxtthxw.art",
-    "videos.danksquad.org",
-    "peertube.wtfayla.net",
-    "vdo.greboca.com",
-    "nekopunktube.fr",
-    "mplayer.demouliere.eu",
-    "tube.rfc1149.net",
-    "video.lamer-ethos.site",
-    "peertube.fr",
-    "flooftube.net",
-    "tube.kdy.ch",
-    "tube.chaoszone.tv",
-    "tube.transgirl.fr",
-    "peertube.lesparasites.net",
-    "videoteca.kenobit.it",
-    "video.zonawarpa.it",
-    "peertube.jussak.net",
-    "peertube.normalgamingcommunity.cz",
-    "mytube.cooltux.net",
-    "eggflix.foolbazar.eu",
-    "tube.vrpnet.org",
-    "tube-test.apps.education.fr",
-    "videos.martyn.berlin",
-    "vdo.unvanquished.greboca.com",
-    "peertube.dc.pini.fr",
-    "tube.chispa.fr",
-    "peertube.keazilla.net",
-    "video.valme.io",
-    "tube.alado.space",
-    "play.mittdata.se",
-    "peertube.fedi.zutto.fi",
-    "peertube.rainbowswingers.net",
-    "www.videos-libr.es",
-    "peertube.devol.it",
-    "peertube.qtg.fr",
-    "peertube.forteza.fr",
-    "neon.cybre.stream",
-    "watch.softinio.com",
-    "itvplus.iiens.net",
-    "video.altertek.org",
-    "tube.croustifed.net",
-    "video.omada.cafe",
-    "video.chalec.org",
-    "peertube.universiteruraledescevennes.org",
-    "videos.coletivos.org",
-    "vulgarisation-informatique.fr",
-    "peertube.ch",
-    "video.infosec.exchange",
-    "videos.globenet.org",
-    "video.pronkiewicz.pl",
-    "video.barcelo.ynh.fr",
-    "videovortex.tv",
-    "tube.kotocoop.org",
-    "videos.idiocy.xyz",
-    "spook.tube",
-    "intelligentia.tv",
-    "tube.helpsolve.org",
-    "video.alton.cloud",
-    "video.katehildenbrand.com",
-    "thecool.tube",
-    "tube.gayfr.online",
-    "mla.moe",
-    "punktube.net",
-    "video.gamerstavern.online",
-    "peertube.ghis94.ovh",
-    "videos.npo.city",
-    "flim.txmn.tk",
-    "peertube.hosnet.fr",
-    "peertube.cirkau.art",
-    "peertube.behostings.net",
-    "video.administrieren.net",
-    "peertube.modspil.dk",
-    "video.metaccount.de",
-    "video.espr.moe",
-    "jetstream.watch",
-    "peertube.futo.org",
-    "bolha.tube",
-    "tube.todon.eu",
-    "peertube.habets.house",
-    "tube.lubakiagenda.net",
-    "video.cpn.so",
-    "video.canadiancivil.com",
-    "dreiecksnebel.alex-detsch.de",
-    "video.chasmcity.net",
-    "media.inno3.eu",
-    "peertube.nodja.com",
-    "video.olos311.org",
-    "videos.enisa.europa.eu",
-    "peertube.manalejandro.com",
-    "video.hacklab.fi",
-    "vamzdis.group.lt",
-    "my-sunshine.video",
-    "video.chipio.industries",
-    "peertube.ignifi.me",
-    "peertube.th3rdsergeevich.xyz",
-    "peertube.marud.fr",
-    "davbot.media",
-    "peertube.nissesdomain.org",
-    "tube.area404.cloud",
-    "video.echirolles.fr",
-    "apollo.lanofthedead.xyz",
-    "quebec1.freediverse.com",
-    "video.oh14.de",
-    "peertube.touhoppai.moe",
-    "22x22.ru",
-    "christunscripted.com",
-    "peertube.crazy-to-bike.de",
-    "peertube.laveinal.cat",
-    "peertube.ecologie.bzh",
-    "tube.extinctionrebellion.fr",
-    "video.iphodase.fr",
-    "video.taboulisme.com",
-    "peertube.minetestserver.ru",
-    "tube.funil.de",
-    "media.cooleysekula.net",
-    "peertube.plataformess.org",
-    "po0.online",
-    "subscribeto.me",
-    "video.fedi.bzh",
-    "kpop.22x22.ru",
-    "video.maechler.cloud",
-    "peertube.dk",
-    "peertube.geekgalaxy.fr",
-    "videos.offroad.town",
-    "special.videovortex.tv",
-    "video.coyp.us",
-    "video.abraum.de",
-    "tv.arns.lt",
-    "voluntarytube.com",
-    "vid.northbound.online",
-    "peertube.doesstuff.social",
-    "kadras.live",
-    "trailers.ddigest.com",
-    "pastafriday.club",
-    "peertube.teftera.com",
-    "video.rastapuls.com",
-    "peertube.nogafam.fr",
-    "puppet.zone",
-    "tv.atmx.ca",
-    "vid.norbipeti.eu",
-    "nadajemy.com",
-    "displayeurope.video",
-    "flipboard.video",
-    "video.lacalligramme.fr",
-    "video.tkz.es",
-    "peertube.otakufarms.com",
-    "videos.viorsan.com",
-    "peertube.stattzeitung.org",
-    "peertube.it-arts.net",
-    "peertube.anti-logic.com",
-    "pt.thishorsie.rocks",
-    "video.ironsysadmin.com",
-    "peertube-docker.cpy.re",
-    "videos.utsukta.org",
-    "pt.vern.cc",
-    "videos.stadtfabrikanten.org",
-    "film.node9.org",
-    "peertube.vesdia.eu",
-    "watch.jimmydore.com",
-    "views.southfox.me",
-    "peer.raise-uav.com",
-    "tinkerbetter.tube",
-    "peertube.christianpacaud.com",
-    "videos.dromeadhere.fr",
-    "peertube.fedihost.website",
-    "freesoto.tv",
-    "peer.madiator.cloud",
-    "video.9wd.eu",
-    "video.bilecik.edu.tr",
-    "pirtube.calut.fr",
-    "ptube.rousset.nom.fr",
-    "peertube.pix-n-chill.fr",
-    "peertube.helvetet.eu",
-    "video.dlearning.nl",
-    "video.thepolarbear.co.uk",
-    "www.nadajemy.com",
-    "serv3.wiki-tube.de",
-    "tube.doortofreedom.org",
-    "tube.dev.displ.eu",
-    "communitymedia.video",
-    "video.fabiomanganiello.com",
-    "tube.felinn.org",
-    "alterscope.fr",
-    "peertube.festnoz.de",
-    "video.firehawk-systems.com",
-    "phoenixproject.group",
-    "peertube.researchinstitute.at",
-    "tube.sekretaerbaer.net",
-    "peertube.communecter.org",
-    "video.fuss.bz.it",
-    "videos.side-ways.net",
-    "vtr.chikichiki.tube",
-    "peertube.dair-institute.org",
-    "peertube.swarm.solvingmaz.es",
-    "peertube.jackbot.fr",
-    "videos.hack2g2.fr",
-    "peertube.giftedmc.com",
-    "videos.gianmarco.gg",
-    "garr.tv",
-    "stream.rlp-media.de",
-    "video.rlp-media.de",
-    "videos.foilen.com",
-    "video.infojournal.fr",
-    "peertube.astral0pitek.synology.me",
-    "pt.na4.eu",
-    "tube.pol.social",
-    "nolog.media",
-    "peertube.roundpond.net",
-    "peertube.chuggybumba.com",
-    "p.lu",
-    "video.lanceurs-alerte.fr",
-    "private.fedimovie.com",
-    "0ch.tv",
-    "tube.nieuwwestbrabant.nl",
-    "video.ziez.eu",
-    "stl1988.peertube-host.de",
-    "video.rubdos.be",
-    "tube.flokinet.is",
-    "tube.g4rf.net",
-    "stream.biovisata.lt",
-    "brioco.live",
-    "johnydeep.net",
-    "bava.tv",
-    "archive.nocopyrightintended.tv",
-    "peertube.in.ua",
-    "media.exo.cat",
-    "archive.reclaim.tv",
-    "tv.farewellutopia.com",
-    "pt.rwx.ch",
-    "peertube.vapronva.pw",
-    "peertube.histoirescrepues.fr",
-    "tinsley.video",
-    "tube.dembased.xyz",
-    "bark.video",
-    "video.gresille.org",
-    "videos.librescrum.org",
-    "peertube.lhc.net.br",
-    "viste.pt",
-    "tube.asulia.fr",
-    "tube.parinux.org",
-    "peertube.bildung-ekhn.de",
-    "www.mypeer.tube",
-    "vids.stary.pc.pl",
-    "video.jeffmcbride.net",
-    "tv.undersco.re",
-    "video.lono.space",
-    "video.jadin.me",
-    "peertube.rougevertbleu.tv",
-    "dangly.parts",
-    "bonn.video",
-    "peertube.chir.rs",
-    "vid.cthos.dev",
-    "biblion.refchat.net",
-    "tube.ttk.is",
-    "peertube.ohioskates.com",
-    "pt.netcraft.ch",
-    "dalliance.network",
-    "commons.tube",
-    "peertube.familleboisteau.fr",
-    "tube.ryne.moe",
-    "watch.goodluckgabe.life",
-    "petitlutinartube.fr",
-    "peertube.hyperfreedom.org",
-    "video.pullopen.xyz",
-    "videos.explain-it.org",
-    "tube.tinfoil-hat.net",
-    "video.pcgaldo.com",
-    "stream.vrse.be",
-    "biblioteca.theowlclub.net",
-    "watch.easya.solutions",
-    "mix.video",
-    "podlibre.video",
-    "qtube.qlyoung.net",
-    "video.beyondwatts.social",
-    "tube.pustule.org",
-    "tube.fediverse.at",
-    "vid.kinuseka.us",
-    "theater.ethernia.net",
-    "video.irem.univ-paris-diderot.fr",
-    "video.nesven.eu",
-    "peervideo.ru",
-    "peertube.magicstone.dev",
-    "peertube.r2.enst.fr",
-    "tube.numerique.gouv.fr",
-    "tube.linkse.media",
-    "social.fedimovie.com",
-    "tv.gravitons.org",
-    "peertube.simounet.net",
-    "peertube.skorpil.cz",
-    "video.ourcommon.cloud",
-    "peertube.kyriog.eu",
-    "peertube.libresolutions.network",
-    "video.fdlibre.eu",
-    "brocosoup.fr",
-    "peertube.labeuropereunion.eu",
-    "peertube.interhop.org",
-    "video.lavolte.net",
-    "peertube.ti-fr.com",
-    "merci-la-police.fr",
-    "peertube.dsmouse.net",
-    "megatube.lilomoino.fr",
-    "foss.video",
-    "makertube.net",
-    "peertube.kaleidos.net",
-    "peertube.veen.world",
-    "video.laraffinerie.re",
-    "tv.adast.dk",
-    "peertube.mikemestnik.net",
-    "veedeo.org",
-    "neat.tube",
-    "video.nstr.no",
-    "videos.gamercast.net",
-    "tube.morozoff.pro",
-    "apertatube.net",
-    "video.asgardius.company",
-    "vid.nocogabriel.fr",
-    "video.causa-arcana.com",
-    "urbanists.video",
-    "video.ipng.ch",
-    "peertube.tv",
-    "ytube.retronerd.at",
-    "video.taskcards.eu",
-    "peertube.hackerfoo.com",
-    "videos.miolo.org",
-    "peertube.adresse.data.gouv.fr",
-    "syrteplay.obspm.fr",
-    "cloudtube.ise.fraunhofer.de",
-    "videos.jacksonchen666.com",
-    "virtual-girls-are.definitely-for.me",
-    "peertube.nayya.org",
-    "ebildungslabor.video",
-    "portal.digilab.nfa.cz",
-    "peertube.libretic.fr",
-    "astrotube-ufe.obspm.fr",
-    "vod.newellijay.tv",
-    "videos.leslionsfloorball.fr",
-    "peertube.grosist.fr",
-    "video.cnnumerique.fr",
-    "peertube.semperpax.com",
-    "media.zat.im",
-    "fedi.video",
-    "tube.leetdreams.ch",
-    "tube.lab.nrw",
-    "live.libratoi.org",
-    "pt.freedomwolf.cc",
-    "videos.wikilibriste.fr",
-    "videos.icum.to",
-    "video.jacen.moe",
-    "astrotube.obspm.fr",
-    "video.simplex-software.ru",
-    "videos.thinkerview.com",
-    "peertube.b38.rural-it.org",
-    "periscope.numenaute.org",
-    "v.basspistol.org",
-    "kino.schuerz.at",
-    "tube.xn--baw-joa.social",
-    "pete.warpnine.de",
-    "sovran.video",
-    "video.software-fuer-engagierte.de",
-    "peertube.rural-it.org",
-    "bideoteka.eus",
-    "peer.tube",
-    "docker.videos.lecygnenoir.info",
-    "tv.filmfreedom.net",
-    "peertube.viviers-fibre.net",
-    "peertube.elforcer.ru",
-    "peertube.metalbanana.net",
-    "peertube.marienschule.de",
-    "cdn01.tilvids.com",
-    "sdmtube.fr",
-    "video.team-lcbs.eu",
-    "medias.debrouillonet.org",
-    "dytube.com",
-    "video.jigmedatse.com",
-    "tube.kh-berlin.de",
-    "videos.codingotaku.com",
-    "video.cnr.it",
-    "nanawel-peertube.dyndns.org",
-    "video.catgirl.biz",
-    "video.bmu.cloud",
-    "tbh.co-shaoghal.net",
-    "peertube-us.howlround.com",
-    "peertube-eu.howlround.com",
-    "videos.parleur.net",
-    "rankett.net",
-    "video.ut0pia.org",
-    "tube.nogafa.org",
-    "www.neptube.io",
-    "tube.ghk-academy.info",
-    "tube-sciences-technologies.apps.education.fr",
-    "tube-institutionnel.apps.education.fr",
-    "tube-cycle-3.apps.education.fr",
-    "tubulus.openlatin.org",
-    "video.graine-pdl.org",
-    "tube-cycle-2.apps.education.fr",
-    "video.davduf.net",
-    "tube-langues-vivantes.apps.education.fr",
-    "tube-arts-lettres-sciences-humaines.apps.education.fr",
-    "videos.scanlines.xyz",
-    "tube.reseau-canope.fr",
-    "tube-maternelle.apps.education.fr",
-    "video.uriopss-pdl.fr",
-    "tube-action-educative.apps.education.fr",
-    "videos.yesil.club",
-    "tube-numerique-educatif.apps.education.fr",
-    "video.ados.accoord.fr",
-    "tube-education-physique-et-sportive.apps.education.fr",
-    "videos.lemouvementassociatif-pdl.org",
-    "tube-enseignement-professionnel.apps.education.fr",
-    "videos.laliguepaysdelaloire.org",
-    "twctube.twc-zone.eu",
-    "vhs.absturztau.be",
-    "phijkchu.com",
-    "video.lycee-experimental.org",
-    "video.fox-romka.ru",
-    "watch.thelema.social",
-    "vid.mkp.ca",
-    "nightshift.minnix.dev",
-    "tube.friloux.me",
-    "peertube.virtual-assembly.org",
-    "v.mkp.ca",
-    "infothema.net",
-    "video.colibris-outilslibres.org",
-    "videos.alamaisondulibre.org",
-    "tube.nestor.coop",
-    "tube.genb.de",
-    "tube.rooty.fr",
-    "www.kotikoff.net",
-    "openmedia.edunova.it",
-    "ocfedtest.hosted.spacebear.ee",
-    "tube.kicou.info",
-    "videos-passages.huma-num.fr",
-    "video.retroedge.tech",
-    "pt.ilyamikcoder.com",
-    "video.sadmin.io",
-    "stream.jurnalfm.md",
-    "video.publicspaces.net",
-    "video.eientei.org",
-    "tube.erzbistum-hamburg.de",
-    "video.mttv.it",
-    "peertube.cloud.nerdraum.de",
-    "vid.pretok.tv",
-    "tv.santic-zombie.ru",
-    "video.snug.moe",
-    "videos.ritimo.org",
-    "pt.mezzo.moe",
-    "tube.dsocialize.net",
-    "video.linux.it",
-    "bee-tube.fr",
-    "vid.prometheus.systems",
-    "videos.yeswiki.net",
-    "video.r3s.nrw",
-    "peertube.semweb.pro",
-    "testube.distrilab.fr",
-    "tube.koweb.fr",
-    "peertube.genma.fr",
-    "peertube.satoshishop.de",
-    "peertube.zwindler.fr",
-    "videos.fsci.in",
-    "video.chbmeyer.de",
-    "video.rs-einrich.de",
-    "dud175.inf.tu-dresden.de",
-    "peertube.fenarinarsa.com",
-    "exode.me",
-    "video.anartist.org",
-    "peertube.home.x0r.fr",
-    "skeptube.fr",
-    "tube.pilgerweg-21.de",
-    "peertube.bubbletea.dev",
-    "peertube.art3mis.de",
-    "tube.interhacker.space",
-    "tube.otter.sh",
-    "replay.jres.org",
-    "peertube.lagob.fr",
-    "video.extremelycorporate.ca",
-    "videos.b4tech.org",
-    "video.off-investigation.fr",
-    "stream.litera.tools",
-    "peertube.kriom.net",
-    "peertube.gemlog.ca",
-    "live.solari.com",
-    "live.codinglab.ch",
-    "dud-video.inf.tu-dresden.de",
-    "media.interior.edu.uy",
-    "tube.ponsonaille.fr",
-    "tube.int5.net",
-    "peertube.arch-linux.cz",
-    "tube.spdns.org",
-    "tube.onlinekirche.net",
-    "tube.systerserver.net",
-    "video.antopie.org",
-    "fedimovie.com",
-    "video.audiovisuel-participatif.org",
-    "video.liveitlive.show",
-    "vid.plantplotting.co.uk",
-    "video.telemillevaches.net",
-    "tv.pirati.cz",
-    "tube.nuxnik.com",
-    "tube.froth.zone",
-    "peertube.ethibox.fr",
-    "tube.communia.org",
-    "video.citizen4.eu",
-    "video.matomocamp.org",
-    "media.fsfe.org",
-    "tube.geekyboo.net",
-    "canal.facil.services",
-    "pt.gordons.gen.nz",
-    "video.ellijaymakerspace.org",
-    "crank.recoil.org",
-    "peertube.education-forum.com",
-    "apathy.tv",
-    "peertube.paladyn.org",
-    "anarchy.tube",
-    "tube.elemac.fr",
-    "videos.bik.opencloud.lu",
-    "videos.aadtp.be",
-    "pt01.lehrerfortbildung-bw.de",
-    "video.benetou.fr",
-    "bideoak.argia.eus",
-    "tube.kher.nl",
-    "peertube.kleph.eu",
-    "pony.tube",
-    "video.rhizome.org",
-    "video.libreti.net",
-    "videos.supertuxkart.net",
-    "v.kisombrella.top",
-    "tube.sp-codes.de",
-    "peertube.bridaahost.ynh.fr",
-    "tube.arthack.nz",
-    "kino.kompot.si",
-    "tube.kockatoo.org",
-    "stream.k-prod.fr",
-    "tube.tylerdavis.xyz",
-    "video.marcorennmaus.de",
-    "peertube.atsuchan.page",
-    "peertube.vlaki.cz",
-    "video-cave-v2.de",
-    "vids.tekdmn.me",
-    "piraten.space",
-    "tube.bstly.de",
-    "tube.futuretic.fr",
-    "peertube.beeldengeluid.nl",
-    "tube.ebin.club",
-    "irrsinn.video",
-    "peertube.klaewyss.fr",
-    "peertube.takeko.cyou",
-    "videos.shmalls.pw",
-    "peertube.kx.studio",
-    "stream.elven.pw",
-    "videos.rampin.org",
-    "bitcointv.com",
-    "media.gzevd.de",
-    "video.resolutions.it",
-    "tube.cms.garden",
-    "peertube.luckow.org",
-    "video.linuxtrent.it",
-    "video.comune.trento.it",
-    "tube.org.il",
-    "peertube.eu.org",
-    "video.blast-info.fr",
-    "peertube.bubuit.net",
-    "fair.tube",
-    "tube.lokad.com",
-    "tube.pmj.rocks",
-    "peertube.ctseuro.com",
-    "spectra.video",
-    "video.triplea.fr",
-    "tube.kotur.org",
-    "peertube.euskarabildua.eus",
-    "tube.rhythms-of-resistance.org",
-    "peertube.luga.at",
-    "peertube.roflcopter.fr",
-    "peertube.swrs.net",
-    "tube.shanti.cafe",
-    "videos.cloudron.io",
-    "video.bards.online",
-    "peertube.gargantia.fr",
-    "tube.grap.coop",
-    "webtv.vandoeuvre.net",
-    "peertube.european-pirates.eu",
-    "kirche.peertube-host.de",
-    "v.lor.sh",
-    "peertube.be",
-    "grypstube.uni-greifswald.de",
-    "wiwi.video",
-    "tube.distrilab.fr",
-    "kinowolnosc.pl",
-    "videos.trom.tf",
-    "videos.john-livingston.fr",
-    "evangelisch.video",
-    "media.undeadnetwork.de",
-    "peertube.nicolastissot.fr",
-    "tube.lucie-philou.com",
-    "tube.schule.social",
-    "tube.xy-space.de",
-    "studios.racer159.com",
-    "fediverse.tv",
-    "xxivproduction.video",
-    "digitalcourage.video",
-    "tvox.ru",
-    "video.kuba-orlik.name",
-    "video.pcf.fr",
-    "tube.rsi.cnr.it",
-    "peertube.bilange.ca",
-    "lastbreach.tv",
-    "video.coales.co",
-    "film.k-prod.fr",
-    "peertube.tweb.tv",
-    "kodcast.com",
-    "tube.oisux.org",
-    "tube.lacaveatonton.ovh",
-    "peertube.anduin.net",
-    "peertube.r5c3.fr",
-    "fotogramas.politicaconciencia.org",
-    "video.dresden.network",
-    "peertube.tiennot.net",
-    "tututu.tube",
-    "tube.picasoft.net",
-    "videos.pair2jeux.tube",
-    "video.internet-czas-dzialac.pl",
-    "tube.cyano.at",
-    "tube.nox-rhea.org",
-    "peertube.securitymadein.lu",
-    "mytube.kn-cloud.de",
-    "peertube.stream",
-    "player.ojamajo.moe",
-    "video.cigliola.com",
-    "tube.jeena.net",
-    "peertube.xwiki.com",
-    "peertube.s2s.video",
-    "peertube.travelpandas.eu",
-    "video.igem.org",
-    "tube.skrep.in",
-    "vid.wildeboer.net",
-    "battlepenguin.video",
-    "peertube.cloud.sans.pub",
-    "refuznik.video",
-    "tube.shela.nu",
-    "video.1146.nohost.me",
-    "tube.grin.hu",
-    "peertube.zergy.net",
-    "videos.tcit.fr",
-    "video.violoncello.ch",
-    "peertube.gidikroon.eu",
-    "tubedu.org",
-    "tilvids.com",
-    "peertube.designersethiques.org",
-    "tube.aquilenet.fr",
-    "peertube.lyceeconnecte.fr",
-    "vids.roshless.me",
-    "peertube.netzbegruenung.de",
-    "tube.opportunis.me",
-    "tube.graz.social",
-    "kolektiva.media",
-    "peertube.ichigo.everydayimshuflin.com",
-    "video.lundi.am",
-    "peertube.lagvoid.com",
-    "video.mugoreve.fr",
-    "tube.portes-imaginaire.org",
-    "p.eertu.be",
-    "video.hardlimit.com",
-    "peertube.debian.social",
-    "peertube.demonix.fr",
-    "videos.hauspie.fr",
-    "video.liberta.vip",
-    "tube.plaf.fr",
-    "tube.hoga.fr",
-    "medias.pingbase.net",
-    "mytube.madzel.de",
-    "tube.azbyka.ru",
-    "greatview.video",
-    "media.krashboyz.org",
-    "toobnix.org",
-    "tube.rebellion.global",
-    "videos.koumoul.com",
-    "tube.undernet.uy",
-    "peertube.opencloud.lu",
-    "peertube.desmu.fr",
-    "tube.nx-pod.de",
-    "video.monsieurbidouille.fr",
-    "tube.crapaud-fou.org",
-    "lostpod.space",
-    "tube.taker.fr",
-    "peertube.dynlinux.io",
-    "v.kretschmann.social",
-    "tube.calculate.social",
-    "peertube.laas.fr",
-    "video.ploud.jp",
-    "conf.tube",
-    "peertube.f-si.org",
-    "peertube.slat.org",
-    "peertube.uno",
-    "tube.tchncs.de",
-    "peertube.anon-kenkai.com",
-    "video.lemediatv.fr",
-    "peertube.artica.center",
-    "indymotion.fr",
-    "tube.fede.re",
-    "peertube.mygaia.org",
-    "peertube.livingutopia.org",
-    "tube.anjara.eu",
-    "video.latavernedejohnjohn.fr",
-    "peertube.pcservice46.fr",
-    "video.coop.tools",
-    "peertube.openstreetmap.fr",
-    "tube.postblue.info",
-    "videos.domainepublic.net",
-    "peertube.makotoworkshop.org",
-    "video.netsyms.com",
-    "vid.y-y.li",
-    "diode.zone",
-    "peertube.nomagic.uk",
-    "peertube.we-keys.fr",
-    "artitube.artifaille.fr",
-    "peertube.amicale.net",
-    "aperi.tube",
-    "video.lw1.at",
-    "www.yiny.org",
-    "video.typica.us",
-    "videos.lescommuns.org",
-    "peertube.1312.media",
-    "skeptikon.fr",
-    "tube.homecomputing.fr",
-    "video.tedomum.net",
-    "video.g3l.org",
-    "fontube.fr",
-    "peertube.gaialabs.ch",
-    "tube.p2p.legal",
-    "peertube.solidev.net",
-    "videos.cemea.org",
-    "video.passageenseine.fr",
-    "share.tube",
-    "peertube.heraut.eu",
-    "peertube.gegeweb.eu",
-    "framatube.org",
-    "peertube.datagueule.tv",
-    "video.lqdn.fr",
-    "peertube3.cpy.re",
-    "peertube2.cpy.re",
-    "peertube.cpy.re",
-];
+// Last updated at: 2025-10-16
+INDEX_INSTANCES.instances = ["0ch.tv","22x22.ru","2tonwaffle.tv","810video.com","ace-deec.inspe-bretagne.fr","aipi.video","all.electric.kitchen","alterscope.fr","anarchy.tube","andyrush.fedihost.io","angeltales.angellive.ru","annex.fedimovie.com","apathy.tv","aperi.tube","apertatube.net","apollo.lanofthedead.xyz","archive.hitness.club","archive.nocopyrightintended.tv","archive.reclaim.tv","arkm.tv","arson.video","artitube.artifaille.fr","asantube.stream","astrotube-ufe.obspm.fr","astrotube.obspm.fr","audio.freediverse.com","av.giplt.nl","avantwhatever.xyz","avone.me","ballhaus.media","bark.video","battlepenguin.video","bava.tv","beardedtek.net","beartrix-peertube-u29672.vm.elestio.app","bedheadbernie.net","bee-tube.fr","bengo.tube","beta.flimmerstunde.xyz","betamax.donotsta.re","bewegte-bilder.berlin","biblion.refchat.net","biblioteca.theowlclub.net","bideoak.argia.eus","bideoak.zeorri.eus","bideoteka.eus","bitcointv.com","bitforged.stream","bitube.ict-battenberg.ch","blurt.media","bodycam.leapjuice.com","bolha.tube","bonn.video","breeze.tube","bridport.tv","brioco.live","brocosoup.fr","c-tube.c-base.org","canal.bizarro.cc","canal.facil.services","canard.tube","canti.kmeuh.fr","caseyandbros.walker.id","cast.garden","ccutube.ccu.edu.tw","cdn01.tilvids.com","cdn7.dns04.com","cfnumerique.tv","channel.t25b.com","christian.freediverse.com","christube.malyon.co.uk","christuncensored.com","christunscripted.com","cine.nashe.be","classe.iro.umontreal.ca","clip.place","clipet.tv","clips.crcmz.me","cloudtube.ise.fraunhofer.de","commons.tube","communitymedia.video","conf.tube","content.haacksnetworking.org","content.wissen-ist-relevant.com","cookievideo.com","crank.recoil.org","crimecamz.com","csictv.csic.es","csptube.au","cubetube.tv","cuddly.tube","cumraci.tv","dalek.zone","dalliance.network","dangly.parts","darkvapor.nohost.me","davbot.media","ddi-video.cs.uni-paderborn.de","den.wtf","dev-my.sohobcom.ye","dev.itvplus.iiens.net","devwithzachary.com","digitalcourage.video","diler.tube","diode.zone","dioxitube.com","displayeurope.video","djtv.es","dob.media.fibodo.com","docker.videos.lecygnenoir.info","dreamspace.video","dreiecksnebel.alex-detsch.de","drovn.ninja","dud-video.inf.tu-dresden.de","dud175.inf.tu-dresden.de","dytube.com","earthclimate.tv","earthshiptv.nl","ebildungslabor.video","eburg.tube","edflix.nl","eggflix.foolbazar.eu","eleison.eu","env-0499245.wc.reclaim.cloud","epsilon.pw","evangelisch.video","evuo.online","exatas.tv","exo.tube","exode.me","expeer.eduge.ch","exquisite.tube","faf.watch","fair.tube","falkmx.ddns.net","fedi.video","fedimovie.com","feditubo.yt","fediverse.tv","fightforinfo.com","film.fjerland.no","film.k-prod.fr","film.node9.org","firehawks.htown.de","flappingcrane.com","flim.txmn.tk","flipboard.video","flooftube.net","fontube.fr","foss.video","fotogramas.politicaconciencia.org","foubtube.com","framatube.org","freediverse.com","freedomtv.pro","freesoto.tv","friprogramvarusyndikatet.tv","fstube.net","gabtoken.noho.st","gade.o-k-i.net","gallaghertube.com","garr.tv","gas.tube.sh","gbemkomla.jesuits-africa.education","gegenstimme.tv","gnulinux.tube","go3.site","goetterfunkentv.peertube-host.de","goldcountry.tube","goredb.com","greatview.video","grypstube.uni-greifswald.de","gultsch.video","haeckflix.org","handcuffedgirls.me","helisexual.live","hitchtube.fr","hosers.isurf.ca","hpstube.fr","humanreevolution.com","hyperreal.tube","ibbwstream.schule-bw.de","ibiala.nohost.me","icanteven.watch","indymotion.fr","infothema.net","inspeer.eduge.ch","intelligentia.tv","intratube-u25541.vm.elestio.app","irrsinn.video","itvplus.iiens.net","jetstream.watch","jnuk-peertube-u52747.vm.elestio.app","jnuk.media","johnydeep.net","joovideo.cfd","k-pop.22x22.ru","kadras.live","kamtube.ru","kanal-ri.click","karakun-peertube-codecamp.k8s.karakun.com","kiddotube.com","kilero.interior.edu.uy","killedinit.mooo.com","kino.kompot.si","kino.schuerz.at","kinowolnosc.pl","kirche.peertube-host.de","kiwi.froggirl.club","kodcast.com","kolektiva.media","koreus.tv","kpop.22x22.ru","kviz.leemoon.network","kyiv.tube","lakupatukka.tunk.org","lastbreach.tv","leffler.video","lenteratv.umt.edu.my","librepoop.de","lightchannel.tv","linhtran.eu","linux.tail065cae.ts.net","literatube.com","live.codinglab.ch","live.dcnh.cloud","live.libratoi.org","live.nanao.moe","live.oldskool.fi","live.solari.com","live.zawiya.one","lone.earth","lostpod.space","lounges.monster","lucarne.balsamine.be","luxtube.lu","lv.s-zensky.com","lyononline.dev","m.bbbdn.jp","makertube.net","matte.fedihost.io","mcast.mvideo.ru","media.apc.org","media.assassinate-you.net","media.caladona.org","media.chch.it","media.cooleysekula.net","media.curious.bio","media.exo.cat","media.fermalo.fr","media.fsfe.org","media.gadfly.ai","media.geekwisdom.org","media.gzevd.de","media.inno3.eu","media.interior.edu.uy","media.krashboyz.org","media.mwit.ac.th","media.mzhd.de","media.nolog.cz","media.notfunk.radio","media.opendigital.info","media.over-world.org","media.pelin.top","media.privacyinternational.org","media.repeat.is","media.selector.su","media.smz-ma.de","media.undeadnetwork.de","media.vzst.nl","media.zat.im","medias.debrouillonet.org","medias.pingbase.net","mediathek.fs1.tv","mediathek.ra-micro.de","mediathek.rzgierskopp.de","megatube.lilomoino.fr","megaultra.us","merci-la-police.fr","meshtube.net","mevideo.host","meyon.com.ye","micanal.encanarias.info","michaelheath.tv","mirror.peertube.metalbanana.net","mirtube.ru","misnina.tv","mix.video","mla.moe","monitor.grossermensch.eu","mooosetube.mooose.org","mootube.fans","mosk.tube","mountaintown.video","movie.nael-brun.com","mplayer.demouliere.eu","music.facb69.tec.br","mv.vannilla.org","my-sunshine.video","mystic.video","mytube.bijralph.com","mytube.cooltux.net","mytube.kn-cloud.de","mytube.madzel.de","mytube.malenfant.net","mytube.pyramix.ca","nadajemy.com","nanawel-peertube.dyndns.org","nastub.cz","neat.tube","nekopunktube.fr","neon.cybre.stream","neshweb.tv","nethack.tv","nicecrew.tv","nightshift.minnix.dev","nolog.media","notretube.asselma.eu","nuobodu.space","nvsk.tube","nya.show","nyltube.nylarea.com","ocfedtest.hosted.spacebear.ee","offenes.tv","ohayo.rally.guide","oldtube.aetherial.xyz","on24.at","onair.sbs","ontvkorea.com","openmedia.edunova.it","opsis.kyanos.one","outcast.am","ovaltube.codinglab.ch","owotube.ru","p.eertu.be","p.efg-ober-ramstadt.de","p.lu","p.ms.vg","p.nintendojo.fr","p2b.drjpdns.com","pace.rip","pantube.ovh","partners.eqtube.org","pastafriday.club","pbvideo.ru","peer.acidfog.com","peer.azurs.fr","peer.i6p.ru","peer.madiator.cloud","peer.philoxweb.be","peer.pvddhhnk.nl","peer.raise-uav.com","peer.taibsu.net","peer.theaterzentrum.at","peer.tube","peerate.fr","peertube-ardlead-u29325.vm.elestio.app","peertube-beeldverhalen-u36587.vm.elestio.app","peertube-demo.lern.link","peertube-docker.cpy.re","peertube-ecogather-u20874.vm.elestio.app","peertube-eu.howlround.com","peertube-ext.sovcombank.ru","peertube-ktgou-u11537.vm.elestio.app","peertube-us.howlround.com","peertube-wb4xz-u27447.vm.elestio.app","peertube.0011.lt","peertube.020.pl","peertube.123.in.th","peertube.1312.media","peertube.1984.cz","peertube.2i2l.net","peertube.2tonwaffle.com","peertube.30p87.de","peertube.42lausanne.ch","peertube.42paris.fr","peertube.adresse.data.gouv.fr","peertube.aegrel.ee","peertube.aldinet.duckdns.org","peertube.alpharius.io","peertube.am-networks.fr","peertube.amicale.net","peertube.anasodon.com","peertube.anduin.net","peertube.anija.mooo.com","peertube.anon-kenkai.com","peertube.anti-logic.com","peertube.anzui.dev","peertube.apcraft.jp","peertube.apse-asso.fr","peertube.arch-linux.cz","peertube.arnhome.ovh","peertube.art3mis.de","peertube.artica.center","peertube.askan.info","peertube.asp.krakow.pl","peertube.astral0pitek.synology.me","peertube.astrolabe.coop","peertube.atilla.org","peertube.atsuchan.page","peertube.aukfood.net","peertube.automat.click","peertube.axiom-paca.g1.lu","peertube.b38.rural-it.org","peertube.baptistentiel.nl","peertube.be","peertube.becycle.com","peertube.beeldengeluid.nl","peertube.behostings.net","peertube.bekucera.uk","peertube.bgeneric.net","peertube.bgzashtita.es","peertube.bilange.ca","peertube.bildung-ekhn.de","peertube.bingo-ev.de","peertube.blablalinux.be","peertube.boc47.org","peertube.boger.dev","peertube.boomjacky.art","peertube.br0.fr","peertube.brian70.tw","peertube.bridaahost.ynh.fr","peertube.brigadadigital.tec.br","peertube.bubbletea.dev","peertube.bubuit.net","peertube.bunseed.org","peertube.busana.lu","peertube.cainet.info","peertube.casasnow.noho.st","peertube.casually.cat","peertube.cevn.io","peertube.ch","peertube.chartilacorp.ru","peertube.chaunchy.com","peertube.chir.rs","peertube.chn.moe","peertube.chnops.info","peertube.christianpacaud.com","peertube.chrskly.net","peertube.chuggybumba.com","peertube.cif.su","peertube.cipherbliss.com","peertube.circlewithadot.net","peertube.cirkau.art","peertube.cloud.nerdraum.de","peertube.cloud.sans.pub","peertube.cloud68.co","peertube.cluster.wtf","peertube.co.uk","peertube.cobolworx.com","peertube.cocamserverguild.com","peertube.coderbunker.ca","peertube.communecter.org","peertube.cpy.re","peertube.craftum.pl","peertube.cratonsed.ge","peertube.crazy-to-bike.de","peertube.csparker.co.uk","peertube.ctseuro.com","peertube.cuatrolibertades.org","peertube.cube4fun.net","peertube.cyber-tribal.com","peertube.daemonlord.freeddns.org","peertube.dair-institute.org","peertube.darkness.services","peertube.datagueule.tv","peertube.dc.pini.fr","peertube.dcldesign.co.uk","peertube.debian.social","peertube.delfinpe.de","peertube.delta0189.xyz","peertube.demonix.fr","peertube.designersethiques.org","peertube.desmu.fr","peertube.devol.it","peertube.diem25.ynh.fr","peertube.diplopode.net","peertube.dixvaha.com","peertube.dk","peertube.doesstuff.social","peertube.doronichi.com","peertube.downes.ca","peertube.dsdrive.fr","peertube.dsmouse.net","peertube.dtth.ch","peertube.dubwise.dk","peertube.duckarmada.moe","peertube.dynlinux.io","peertube.easter.fr","peertube.eb8.org","peertube.ecologie.bzh","peertube.ecsodikas.eu","peertube.education-forum.com","peertube.ekosystems.fr","peertube.elforcer.ru","peertube.elobot.ch","peertube.eqver.se","peertube.ethibox.fr","peertube.eticadigital.eu","peertube.eu.org","peertube.european-pirates.eu","peertube.eus","peertube.euskarabildua.eus","peertube.existiert.ch","peertube.f-si.org","peertube.familie-berner.de","peertube.familleboisteau.fr","peertube.fedi-multi-verse.eu","peertube.fedi.zutto.fi","peertube.fedihost.website","peertube.fedihub.online","peertube.fediversity.eu","peertube.fenarinarsa.com","peertube.festnoz.de","peertube.fifthdread.com","peertube.flauschbereich.de","peertube.florentcurk.com","peertube.fomin.site","peertube.forteza.fr","peertube.fototjansterkalmar.com","peertube.foxfam.club","peertube.fr","peertube.funkfeuer.at","peertube.futo.org","peertube.g2od.ch","peertube.gaialabs.ch","peertube.gargantia.fr","peertube.geekgalaxy.fr","peertube.gegeweb.eu","peertube.gemlog.ca","peertube.genma.fr","peertube.get-racing.de","peertube.ghis94.ovh","peertube.gidikroon.eu","peertube.giftedmc.com","peertube.giz.berlin","peertube.graafschapcollege.nl","peertube.gravitywell.xyz","peertube.grosist.fr","peertube.gsugambit.com","peertube.guillaumeleguen.xyz","peertube.guiofamily.fr","peertube.gyatt.cc","peertube.gymnasium-ditzingen.de","peertube.gyptazy.com","peertube.h-u.social","peertube.habets.house","peertube.hackerfoo.com","peertube.hameln.social","peertube.havesexwith.men","peertube.headcrashing.eu","peertube.heise.de","peertube.helvetet.eu","peertube.henrywithu.com","peertube.heraut.eu","peertube.histoirescrepues.fr","peertube.hizkia.eu","peertube.hlpnet.dk","peertube.home.x0r.fr","peertube.hosnet.fr","peertube.hyperfreedom.org","peertube.ichigo.everydayimshuflin.com","peertube.ignifi.me","peertube.ii.md","peertube.imaag.de","peertube.in.ua","peertube.init-c.de","peertube.inparadise.se","peertube.interhop.org","peertube.intrapology.com","peertube.iriseden.eu","peertube.it","peertube.it-arts.net","peertube.iz5wga.radio","peertube.jackbot.fr","peertube.jarmvl.net","peertube.jimmy-b.se","peertube.jmsquared.net","peertube.joby.lol","peertube.june.ie","peertube.jussak.net","peertube.kaaosunlimited.fi","peertube.kaleidos.net","peertube.kalua.im","peertube.kameha.click","peertube.katholisch.social","peertube.kawateam.fr","peertube.keazilla.net","peertube.kerenon.com","peertube.kevinperelman.com","peertube.klaewyss.fr","peertube.kleph.eu","peertube.kobel.fyi","peertube.kompektiva.org","peertube.koolenboer.synology.me","peertube.kriom.net","peertube.kuenet.ch","peertube.kx.studio","peertube.kyriog.eu","peertube.la-famille-muller.fr","peertube.laas.fr","peertube.lab.how","peertube.labeuropereunion.eu","peertube.lagbag.com","peertube.lagob.fr","peertube.lagvoid.com","peertube.lagy.org","peertube.lanterne-rouge.info","peertube.laveinal.cat","peertube.le-cem.com","peertube.lesparasites.net","peertube.lhc.lu","peertube.lhc.net.br","peertube.li","peertube.libresolutions.network","peertube.libretic.fr","peertube.linagora.com","peertube.linsurgee.fr","peertube.linuxrocks.online","peertube.livingutopia.org","peertube.local.tilera.xyz","peertube.logilab.fr","peertube.louisematic.site","peertube.luanti.ru","peertube.luckow.org","peertube.luga.at","peertube.lyceeconnecte.fr","peertube.lyclpg.itereva.pf","peertube.lykle.stellarhosted.com","peertube.m2.nz","peertube.magicstone.dev","peertube.makotoworkshop.org","peertube.manalejandro.com","peertube.marcelsite.com","peertube.marienschule.de","peertube.martiabernathey.com","peertube.marud.fr","peertube.mdg-hamburg.de","peertube.meditationsteps.org","peertube.mesnumeriques.fr","peertube.metalbanana.net","peertube.metalphoenix.synology.me","peertube.mgtow.pl","peertube.miguelcr.me","peertube.mikemestnik.net","peertube.minetestserver.ru","peertube.miniwue.de","peertube.mldchan.dev","peertube.modspil.dk","peertube.monicz.dev","peertube.monlycee.net","peertube.moulon.inrae.fr","peertube.mpu.edu.mo","peertube.musicstudio.pro","peertube.muxika.org","peertube.mygaia.org","peertube.myhn.fr","peertube.nadeko.net","peertube.nashitut.ru","peertube.nayya.org","peertube.nazlo.space","peertube.nekosunevr.co.uk","peertube.netzbegruenung.de","peertube.nicolastissot.fr","peertube.nighty.name","peertube.nissesdomain.org","peertube.no","peertube.nodja.com","peertube.nogafam.fr","peertube.noiz.co.za","peertube.nomagic.uk","peertube.normalgamingcommunity.cz","peertube.northernvoice.app","peertube.novettam.dev","peertube.nthpyro.dev","peertube.nuage-libre.fr","peertube.offerman.com","peertube.officebot.io","peertube.ohioskates.com","peertube.on6zq.be","peertube.opencloud.lu","peertube.openrightsgroup.org","peertube.openstreetmap.fr","peertube.orderi.co","peertube.org.uk","peertube.otakufarms.com","peertube.pablopernot.fr","peertube.paladyn.org","peertube.parenti.net","peertube.paring.moe","peertube.pcservice46.fr","peertube.physfluids.fr","peertube.pix-n-chill.fr","peertube.pixnbits.de","peertube.plataformess.org","peertube.plaureano.nohost.me","peertube.pnpde.social","peertube.podverse.fm","peertube.pogmom.me","peertube.pp.ua","peertube.protagio.org","peertube.prozak.org","peertube.public.cat","peertube.puzyryov.ru","peertube.pve1.cluster.weinrich.dev","peertube.qontinuum.space","peertube.qtg.fr","peertube.r2.enst.fr","peertube.r5c3.fr","peertube.ra.no","peertube.radres.xyz","peertube.rainbowswingers.net","peertube.redgate.tv","peertube.redpill-insight.com","peertube.researchinstitute.at","peertube.revelin.fr","peertube.rezel.net","peertube.rezo-rm.fr","peertube.rhoving.com","peertube.rlp.schule","peertube.roflcopter.fr","peertube.rokugan.fr","peertube.rougevertbleu.tv","peertube.roundpond.net","peertube.rse43.com","peertube.rural-it.org","peertube.s2s.video","peertube.sarg.dev","peertube.satoshishop.de","peertube.sbbz-luise.de","peertube.scapior.dev","peertube.scd31.com","peertube.sct.pf","peertube.se","peertube.sebastienvigneau.xyz","peertube.securelab.eu","peertube.securitymadein.lu","peertube.seitendan.com","peertube.semperpax.com","peertube.semweb.pro","peertube.sensin.eu","peertube.server.we-cloud.de","peertube.seti-hub.org","peertube.shadowfr69.eu","peertube.shilohnewark.org","peertube.shultz.ynh.fr","peertube.sieprawski.pl","peertube.simounet.net","peertube.sjml.de","peertube.skorpil.cz","peertube.skydevs.me","peertube.slat.org","peertube.smertrios.com","peertube.socleo.org","peertube.solidev.net","peertube.spaceships.me","peertube.ssgmedia.net","peertube.stattzeitung.org","peertube.staudt.bayern","peertube.stream","peertube.swarm.solvingmaz.es","peertube.swiecanski.eu","peertube.swrs.net","peertube.takeko.cyou","peertube.tangentfox.com","peertube.teftera.com","peertube.terranout.mine.nu","peertube.teutronic-services.de","peertube.th3rdsergeevich.xyz","peertube.themcgovern.net","peertube.ti-fr.com","peertube.tiennot.net","peertube.timrowe.org","peertube.tmp.rcp.tf","peertube.tn","peertube.touhoppai.moe","peertube.travelpandas.eu","peertube.treffler.cloud","peertube.troback.com","peertube.tspu.edu.ru","peertube.tspu.ru","peertube.tv","peertube.tweb.tv","peertube.ucy.de","peertube.unipi.it","peertube.univ-montp3.fr","peertube.universiteruraledescevennes.org","peertube.unixweb.net","peertube.uno","peertube.vanderb.net","peertube.vapronva.pw","peertube.veen.world","peertube.vesdia.eu","peertube.vhack.eu","peertube.videoformes.com","peertube.videum.eu","peertube.virtual-assembly.org","peertube.vit-bund.de","peertube.viviers-fibre.net","peertube.vlaki.cz","peertube.waima.nu","peertube.waldstepperbu.de","peertube.we-keys.fr","peertube.weiling.de","peertube.winscloud.net","peertube.wirenboard.com","peertube.wivodaim.ch","peertube.woitschetzki.de","peertube.wtf","peertube.wtfayla.net","peertube.wuqiqi.space","peertube.xn--gribschi-o4a.ch","peertube.xrcb.cat","peertube.xwiki.com","peertube.yujiri.xyz","peertube.zalasur.media","peertube.zanoni.top","peertube.zergy.net","peertube.zmuuf.org","peertube.zveronline.ru","peertube.zwindler.fr","peertube2.assomption.bzh","peertube2.cpy.re","peertube3.cpy.re","peertube33.ethibox.fr","peertube400.pocketnet.app","peertube6.f-si.org","peertube601.pocketnet.app","peertubecz.duckdns.org","peertubevdb.de","peervideo.ru","periscope.numenaute.org","pete.warpnine.de","petitlutinartube.fr","pfideo.pfriedma.org","phijkchu.com","phoenixproject.group","piped.chrisco.me","piraten.space","pire.artisanlogiciel.net","pirtube.calut.fr","piter.tube","planetube.live","platt.video","play-my.video","play.cotv.org.br","play.dfri.se","play.dotlan.net","play.kontrabanda.net","play.kryta.app","play.mittdata.se","play.rejas.se","play.shirtless.gay","play.terminal9studios.com","player.ojamajo.moe","po0.online","poast.tv","podlibre.video","pointless.video","pon.tv","pony.tube","portal.digilab.nfa.cz","praxis.su","praxis.tube","private.fedimovie.com","prtb.crispius.ca","prtb.komaniya.work","pt.b0nfire.xyz","pt.bsuir.by","pt.condime.de","pt.erb.pw","pt.fourthievesvinegar.org","pt.freedomwolf.cc","pt.gogreenit.net","pt.gordons.gen.nz","pt.ilyamikcoder.com","pt.irnok.net","pt.lnklnx.com","pt.lunya.pet","pt.mezzo.moe","pt.minhinprom.ru","pt.na4.eu","pt.nest.norbipeti.eu","pt.netcraft.ch","pt.nijbakker.net","pt.oops.wtf","pt.pube.tk","pt.rikkalab.net","pt.rwx.ch","pt.sarahgebauer.com","pt.scrunkly.cat","pt.secnd.me","pt.teloschistes.ch","pt.thishorsie.rocks","pt.vern.cc","pt.xut.pl","pt.ywqr.icu","pt.z-y.win","pt01.lehrerfortbildung-bw.de","ptp01.w-vwa.de","ptube-test.mephi.ru","ptube.rousset.nom.fr","publicvideo.nl","punktube.net","puppet.zone","puptube.rodeo","qtube.qlyoung.net","quantube.win","quebec1.freediverse.com","rankett.net","raptube.antipub.org","reallibertymedia.xyz","reels.llamachile.tube","refuznik.video","regarder.sans.pub","regardons.logaton.fr","replay.jres.org","resist.video","retvrn.tv","ritatube.ritacollege.be","rofl.im","rotortube.jancokock.me","rrgeorge.video","runeclaw.net","s.vnchich.net","s1.vnchich.vip","sc.goodprax.is","sc07.tv","sdmtube.fr","see.ellipsenpark.de","seka.pona.la","sermons.luctorcrc.org","serv1.wiki-tube.de","serv2.wiki-tube.de","serv3.wiki-tube.de","sfba.video","share.tube","simify.tv","sizetube.com","skeptikon.fr","skeptube.fr","sntissste.ddns.net","social.fedimovie.com","softlyspoken.taylormadetech.dev","solarsystem.video","sovran.video","special.videovortex.tv","spectra.video","spook.tube","srv.messiah.cz","st.fdel.moe","starsreel.com","stl1988.peertube-host.de","store.tadreb.live","stream.andersonr.net","stream.biovisata.lt","stream.brentnorris.net","stream.conesphere.cloud","stream.edmonson.kyschools.us","stream.elven.pw","stream.gigaohm.bio","stream.homelab.gabb.fr","stream.ilc.upd.edu.ph","stream.indieagora.com","stream.jurnalfm.md","stream.k-prod.fr","stream.litera.tools","stream.messerli.ch","stream.nuemedia.se","stream.rlp-media.de","stream.ssyz.org.tr","stream.udk-berlin.de","stream.vrse.be","streamarchive.manicphase.me","streamouille.fr","streamsource.video","studio.lrnz.it","studios.racer159.com","stylite.live","styxhexenhammer666.com","subscribeto.me","sunutv-preprod.unchk.sn","suptube.cz","sv.jvideos.top","swannrack.tv","syrteplay.obspm.fr","systemofchips.net","tankie.tube","tarchivist.drjpdns.com","tbh.co-shaoghal.net","techlore.tv","telegenic.talesofmy.life","teregarde.icu","test.staging.fedihost.co","test.video.edu.nl","testube.distrilab.fr","theater.ethernia.net","thecool.tube","thevoid.video","tiktube.com","tilvids.com","tinkerbetter.tube","tinsley.video","titannebula.com","toobnix.org","trailers.ddigest.com","trentontube.trentonhoshiko.com","tube-action-educative.apps.education.fr","tube-arts-lettres-sciences-humaines.apps.education.fr","tube-cycle-2.apps.education.fr","tube-cycle-3.apps.education.fr","tube-education-physique-et-sportive.apps.education.fr","tube-enseignement-professionnel.apps.education.fr","tube-institutionnel.apps.education.fr","tube-langues-vivantes.apps.education.fr","tube-maternelle.apps.education.fr","tube-numerique-educatif.apps.education.fr","tube-sciences-technologies.apps.education.fr","tube-test.apps.education.fr","tube.2hyze.de","tube.3xd.eu","tube.4e6a.ru","tube.adriansnetwork.org","tube.aetherial.xyz","tube.alado.space","tube.alff.xyz","tube.alphonso.fr","tube.anjara.eu","tube.anufrij.de","tube.apolut.app","tube.aquilenet.fr","tube.ar.hn","tube.archworks.co","tube.area404.cloud","tube.arthack.nz","tube.artvage.com","tube.asmu.ru","tube.asulia.fr","tube.auengun.net","tube.azbyka.ru","tube.balamb.fr","tube.baraans-corner.de","tube.bawü.social","tube.beit.hinrichs.cc","tube.benzo.online","tube.bigpicture.watch","tube.bit-friends.de","tube.bitwaves.de","tube.blahaj.zone","tube.blueben.net","tube.bremen-social-sciences.de","tube.bsd.cafe","tube.bstly.de","tube.buchstoa-tv.at","tube.calculate.social","tube.cara.news","tube.cchgeu.ru","tube.chach.org","tube.chaoszone.tv","tube.chaun14.fr","tube.childrenshealthdefense.eu","tube.chispa.fr","tube.cms.garden","tube.communia.org","tube.contactsplus.live","tube.crapaud-fou.org","tube.croustifed.net","tube.cyano.at","tube.cybertopia.xyz","tube.dddug.in","tube.deadtom.me","tube.dembased.xyz","tube.destiny.boats","tube.dev.displ.eu","tube.dianaband.info","tube.dirt.social","tube.distrilab.fr","tube.doctors4covidethics.org","tube.doortofreedom.org","tube.drimplausible.com","tube.dsocialize.net","tube.dt-miet.ru","tube.dubyatp.xyz","tube.ebin.club","tube.edufor.me","tube.eggmoe.de","tube.elemac.fr","tube.emy.plus","tube.emy.world","tube.erzbistum-hamburg.de","tube.extinctionrebellion.fr","tube.fdn.fr","tube.fede.re","tube.fedisphere.net","tube.fediverse.at","tube.fediverse.games","tube.felinn.org","tube.fishpost.trade","tube.flokinet.is","tube.foi.hr","tube.foxarmy.org","tube.freeit247.eu","tube.freiheit247.de","tube.friloux.me","tube.froth.zone","tube.fulda.social","tube.funil.de","tube.futuretic.fr","tube.g1sms.fr","tube.g4rf.net","tube.gaiac.io","tube.gayfr.online","tube.geekyboo.net","tube.gen-europe.org","tube.genb.de","tube.ggbox.fr","tube.ghk-academy.info","tube.gi-it.de","tube.giesing.space","tube.govital.net","tube.grap.coop","tube.graz.social","tube.grin.hu","tube.gummientenmann.de","tube.hadan.social","tube.hamakor.org.il","tube.hamdorf.org","tube.helpsolve.org","tube.hoga.fr","tube.homecomputing.fr","tube.homelab.officebot.io","tube.hunterjozwiak.com","tube.informatique.u-paris.fr","tube.infrarotmedien.de","tube.inlinestyle.it","tube.int5.net","tube.interhacker.space","tube.io18.eu","tube.jeena.net","tube.jlserver.de","tube.jubru.fr","tube.juerge.nz","tube.kansanvalta.org","tube.kavocado.net","tube.kdy.ch","tube.kenfm.de","tube.kersnikova.org","tube.kh-berlin.de","tube.kher.nl","tube.kicou.info","tube.kjernsmo.net","tube.kla.tv","tube.kockatoo.org","tube.kotocoop.org","tube.kotur.org","tube.koweb.fr","tube.krserv.de","tube.kx-home.su","tube.lab.nrw","tube.lacaveatonton.ovh","tube.lastbg.com","tube.laurent-malys.fr","tube.laurentclaude.fr","tube.le-gurk.de","tube.leetdreams.ch","tube.linkse.media","tube.lins.me","tube.lokad.com","tube.loping.net","tube.lubakiagenda.net","tube.lucie-philou.com","tube.magaflix.fr","tube.marbleck.eu","tube.matrix.rocks","tube.me.jon-e.net","tube.mfraters.net","tube.mgppu.ru","tube.midov.pl","tube.midwaytrades.com","tube.moep.tv","tube.moncollege-valdoise.fr","tube.morozoff.pro","tube.mowetent.com","tube.n2.puczat.pl","tube.nestor.coop","tube.nevy.xyz","tube.nicfab.eu","tube.niel.me","tube.nieuwwestbrabant.nl","tube.nogafa.org","tube.nox-rhea.org","tube.numerique.gouv.fr","tube.nuxnik.com","tube.nx-pod.de","tube.objnull.net","tube.ofloo.io","tube.oisux.org","tube.onlinekirche.net","tube.opportunis.me","tube.org.il","tube.other.li","tube.otter.sh","tube.p2p.legal","tube.p3x.de","tube.pari.cafe","tube.parinux.org","tube.picasoft.net","tube.pifferi.io","tube.pilgerweg-21.de","tube.plaf.fr","tube.pmj.rocks","tube.pol.social","tube.polytech-reseau.org","tube.pompat.us","tube.ponsonaille.fr","tube.portes-imaginaire.org","tube.postblue.info","tube.public.apolut.net","tube.purser.it","tube.pustule.org","tube.raccoon.quest","tube.rdan.net","tube.rebellion.global","tube.reseau-canope.fr","tube.reszka.org","tube.revertron.com","tube.rfc1149.net","tube.rhythms-of-resistance.org","tube.risedsky.ovh","tube.rooty.fr","tube.rsi.cnr.it","tube.ryne.moe","tube.sadlads.com","tube.sador.me","tube.saik0.com","tube.sanguinius.dev","tube.sasek.tv","tube.sbcloud.cc","tube.schule.social","tube.sebastix.social","tube.sector1.fr","tube.sekretaerbaer.net","tube.shanti.cafe","tube.shela.nu","tube.sinux.pl","tube.sivic.me","tube.skrep.in","tube.sleeping.town","tube.sloth.network","tube.solidairesfinancespubliques.org","tube.solidcharity.net","tube.sp-codes.de","tube.spdns.org","tube.ssh.club","tube.statyvka.org.ua","tube.straub-nv.de","tube.surdeus.su","tube.swee.codes","tube.systemz.pl","tube.systerserver.net","tube.taker.fr","tube.taz.de","tube.tchncs.de","tube.techeasy.org","tube.teckids.org","tube.teqqy.social","tube.thechangebook.org","tube.theliberatededge.org","tube.theplattform.net","tube.tilera.xyz","tube.tinfoil-hat.net","tube.tkzi.ru","tube.todon.eu","tube.transgirl.fr","tube.trax.im","tube.trender.net.au","tube.ttk.is","tube.tuxfriend.fr","tube.tylerdavis.xyz","tube.uncomfortable.business","tube.undernet.uy","tube.unif.app","tube.utzer.de","tube.vencabot.com","tube.virtuelle-ph.at","tube.vrpnet.org","tube.waag.org","tube.whytheyfight.com","tube.wody.kr","tube.woe2you.co.uk","tube.wolfe.casa","tube.xd0.de","tube.xn--baw-joa.social","tube.xrtv.nl","tube.xy-space.de","tube.yapbreak.fr","tube.ynm.hu","tube.zendit.digital","tube4.apolut.net","tubedu.org","tubefree.org","tubes.thefreesocial.com","tubo.novababilonia.me","tubocatodico.bida.im","tubular.tube","tubulus.openlatin.org","tueb.telent.net","tutos-video.atd16.fr","tututu.tube","tuvideo.encanarias.info","tuvideo.txs.es","tv.adast.dk","tv.adn.life","tv.anarchy.bg","tv.animalcracker.art","tv.arns.lt","tv.atmx.ca","tv.cuates.net","tv.dilstories.com","tv.dyne.org","tv.farewellutopia.com","tv.filmfreedom.net","tv.gravitons.org","tv.kobold-cave.eu","tv.kreuder.me","tv.lumbung.space","tv.maechler.cloud","tv.manuelmaag.de","tv.nizika.tv","tv.pirateradio.social","tv.pirati.cz","tv.raslavice.sk","tv.ruesche.de","tv.s.hs3.pl","tv.santic-zombie.ru","tv.solarpunk.land","tv.speleo.mooo.com","tv.suwerenni.org","tv.terrapreta.org.br","tv.undersco.re","tv.zonepl.net","tvn7flix.fr","tvonline.wilamowice.pl","tvox.ru","twctube.twc-zone.eu","tweoo.com","tyrannosaurusgirl.com","uncast.net","urbanists.video","utube.ro","v.basspistol.org","v.blustery.day","v.esd.cc","v.eurorede.com","v.j4.lc","v.kisombrella.top","v.kretschmann.social","v.kyaru.xyz","v.lor.sh","v.mbius.io","v.mkp.ca","v.ocsf.in","v.pizda.world","v.toot.io","v0.trm.md","v1.smartit.nu","vamzdis.group.lt","varis.tv","vdo.greboca.com","vdo.unvanquished.greboca.com","veedeo.org","vhs.absturztau.be","vhs.f4club.ru","vhsky.cz","vibeos.grampajoe.online","vid.amat.us","vid.chaoticmira.gay","vid.cthos.dev","vid.digitaldragon.club","vid.fbxl.net","vid.femboyfurry.net","vid.fossdle.org","vid.freedif.org","vid.involo.ch","vid.jittr.click","vid.kinuseka.us","vid.mattedwards.org","vid.mawuki.de","vid.meow.boutique","vid.mkp.ca","vid.nocogabriel.fr","vid.norbipeti.eu","vid.northbound.online","vid.nsf-home.ip-dynamic.org","vid.ohboii.de","vid.plantplotting.co.uk","vid.pretok.tv","vid.prometheus.systems","vid.ryg.one","vid.samtripoli.com","vid.shadowkat.net","vid.sofita.noho.st","vid.suqu.be","vid.tstoll.me","vid.twhtv.club","vid.wildeboer.net","vid.y-y.li","vid.zeroes.ca","videa.inspirujici.cz","video-cave-v2.de","video.076.moe","video.076.ne.jp","video.1146.nohost.me","video.383.su","video.3cmr.fr","video.4d2.org","video.6p.social","video.9wd.eu","video.abraum.de","video.acra.cloud","video.adamwilbert.com","video.administrieren.net","video.admtz.fr","video.ados.accoord.fr","video.adullact.org","video.agileviet.vn","video.airikr.me","video.akk.moe","video.alee14.me","video.alicia.ne.jp","video.altertek.org","video.alton.cloud","video.amiga-ng.org","video.anaproy.nl","video.anartist.org","video.angrynerdspodcast.nl","video.anrichter.net","video.antopie.org","video.aokami.codelib.re","video.app.nexedi.net","video.apz.fi","video.arghacademy.org","video.aria.dog","video.arslansah.com.tr","video.asgardius.company","video.asonix.dog","video.asturias.red","video.audiovisuel-participatif.org","video.auridh.me","video.aus-der-not-darmstadt.org","video.baez.io","video.balfolk.social","video.barcelo.ynh.fr","video.bards.online","video.batuhan.basoglu.ca","video.beartrix.au","video.benedetta.com.br","video.benetou.fr","video.berocs.com","video.beyondwatts.social","video.bilecik.edu.tr","video.birkeundnymphe.de","video.bl.ag","video.blast-info.fr","video.blender.org","video.blinkyparts.com","video.blueline.mg","video.bmu.cloud","video.boxingpreacher.net","video.brothertec.eu","video.bsrueti.ch","video.canadiancivil.com","video.canc.at","video.cartoon-aa.xyz","video.caruso.one","video.catgirl.biz","video.cats-home.net","video.causa-arcana.com","video.chadwaltercummings.me","video.chalec.org","video.charlesbeadle.tech","video.chasmcity.net","video.chbmeyer.de","video.chipio.industries","video.cigliola.com","video.citizen4.eu","video.cm-en-transition.fr","video.cnil.fr","video.cnnumerique.fr","video.cnr.it","video.coales.co","video.codefor.de","video.coffeebean.social","video.colibris-outilslibres.org","video.collectifpinceoreilles.com","video.colmaris.fr","video.comune.trento.it","video.consultatron.com","video.coop","video.coop.tools","video.coyp.us","video.cpn.so","video.crem.in","video.csc49.fr","video.cybersystems.engineer","video.cymais.cloud","video.d20.social","video.danielaragay.net","video.davduf.net","video.davejansen.com","video.davidsterry.com","video.dhamdomum.ynh.fr","video.digisprong.be","video.discountbucketwarehouse.com","video.dlearning.nl","video.dnfi.no","video.dogmantech.com","video.dokoma.com","video.dresden.network","video.duskeld.dev","video.echelon.pl","video.echirolles.fr","video.edu.nl","video.eientei.org","video.elfhosted.com","video.ellijaymakerspace.org","video.emergeheart.info","video.erikkemp.eu","video.espr.cloud","video.espr.moe","video.europalestine.com","video.exon.name","video.expiredpopsicle.com","video.extremelycorporate.ca","video.f-hub.org","video.fabiomanganiello.com","video.fabriquedelatransition.fr","video.fdlibre.eu","video.fedi.bzh","video.fedihost.co","video.feep.org","video.fhtagn.org","video.firehawk-systems.com","video.firesidefedi.live","video.fiskur.ru","video.fj25.de","video.floor9.com","video.fnordkollektiv.de","video.foofus.com","video.fosshq.org","video.fox-romka.ru","video.franzgraf.de","video.fredix.xyz","video.freie-linke.de","video.fuss.bz.it","video.g3l.org","video.gamerstavern.online","video.gangneux.net","video.geekonweb.fr","video.gem.org.ru","video.gemeinde-pflanzen.net","video.graceenid.com","video.graine-pdl.org","video.grayarea.org","video.greenmycity.eu","video.grenat.art","video.gresille.org","video.gyt.is","video.habets.io","video.hacklab.fi","video.hainry.fr","video.hardlimit.com","video.heathenlab.net","video.holtwick.de","video.hoou.de","video.igem.org","video.immenhofkinder.social","video.index.ngo","video.infiniteloop.tv","video.infinito.nexus","video.infojournal.fr","video.infosec.exchange","video.innovationhub-act.org","video.internet-czas-dzialac.pl","video.interru.io","video.iphodase.fr","video.ipng.ch","video.irem.univ-paris-diderot.fr","video.ironsysadmin.com","video.jacen.moe","video.jadin.me","video.jeffmcbride.net","video.jigmedatse.com","video.katehildenbrand.com","video.kinkyboyspodcast.com","video.kms.social","video.kompektiva.org","video.kopp-verlag.de","video.kuba-orlik.name","video.kyzune.com","video.lacalligramme.fr","video.lala.ovh","video.lamer-ethos.site","video.lanceurs-alerte.fr","video.landtag.ltsh.de","video.laotra.red","video.laraffinerie.re","video.latavernedejohnjohn.fr","video.latribunedelart.com","video.lavolte.net","video.legalloli.net","video.lemediatv.fr","video.lern.link","video.lhed.fr","video.liberta.vip","video.libreti.net","video.linc.systems","video.linux.it","video.linuxtrent.it","video.livecchi.cloud","video.liveitlive.show","video.lmika.org","video.logansimic.com","video.lolihouse.top","video.lono.space","video.lqdn.fr","video.lunago.net","video.lundi.am","video.lw1.at","video.lycee-experimental.org","video.lykledevries.nl","video.macver.org","video.maechler.cloud","video.magical.fish","video.magikh.fr","video.manje.net","video.manu.quebec","video.marcorennmaus.de","video.mariorojo.es","video.mateuaguilo.com","video.matomocamp.org","video.medienzentrum-harburg.de","video.mentality.rip","video.metaccount.de","video.mgupp.ru","video.mikepj.dev","video.millironx.com","video.mobile-adenum.fr","video.mondoweiss.net","video.monsieurbidouille.fr","video.motoreitaliacarlonegri.it","video.mpei.ru","video.mshparisnord.fr","video.mttv.it","video.mugoreve.fr","video.mxsrv.de","video.mxtthxw.art","video.mycrowd.ca","video.na-prostem.si","video.ndqsphub.org","video.neliger.com","video.nesven.eu","video.netsyms.com","video.ngi.eu","video.niboe.info","video.nikau.io","video.nluug.nl","video.nstr.no","video.nuage-libre.fr","video.nuvon.io","video.nyc","video.ocs.nu","video.octofriends.garden","video.odenote.com","video.off-investigation.fr","video.oh14.de","video.olisti.co","video.olos311.org","video.omada.cafe","video.omniatv.com","video.onjase.quebec","video.onlyfriends.cloud","video.osgeo.org","video.ourcommon.cloud","video.outputarts.com","video.ozgurkon.org","video.passageenseine.fr","video.patiosocial.es","video.pavel-english.ru","video.pcf.fr","video.pcgaldo.com","video.pcpal.nl","video.phyrone.de","video.pizza.enby.city","video.pizza.ynh.fr","video.ploss-ra.fr","video.ploud.jp","video.podur.org","video.pop.coop","video.poul.org","video.procolix.eu","video.progressiv.dev","video.pronkiewicz.pl","video.publicspaces.net","video.pullopen.xyz","video.qoto.org","video.querdenken-711.de","video.qutic.com","video.r3s.nrw","video.radiodar.ru","video.raft-network.one","video.randomsonicnet.org","video.rastapuls.com","video.rejas.se","video.resolutions.it","video.retroedge.tech","video.rhizome.org","video.rijnijssel.nl","video.riquy.dev","video.rlp-media.de","video.root66.net","video.rs-einrich.de","video.rubdos.be","video.sadmin.io","video.sadrarin.com","video.sanin.dev","video.sbo.systems","video.secondwindtiming.com","video.selea.se","video.sethgoldstein.me","video.sharebright.net","video.shig.de","video.sidh.bzh","video.silex.me","video.simplex-software.ru","video.smokeyou.org","video.snug.moe","video.software-fuer-engagierte.de","video.sorokin.music","video.sotamedia.org","video.source.pub","video.staging.blender.org","video.starysacz.um.gov.pl","video.stevesworld.co","video.strathspey.org","video.stuve-bamberg.de","video.stwst.at","video.sueneeuniverse.cz","video.swits.org","video.systems.cogsys.wiai.uni-bamberg.de","video.taboulisme.com","video.taskcards.eu","video.team-lcbs.eu","video.tedomum.net","video.telemillevaches.net","video.thepolarbear.co.uk","video.thinkof.name","video.thoshis.net","video.tkz.es","video.toby3d.me","video.transcoded.fr","video.treuzel.de","video.triplea.fr","video.troed.se","video.tryptophonic.com","video.tsundere.love","video.turbo-kermis.fr","video.twitoot.com","video.typesafe.org","video.typica.us","video.uriopss-pdl.fr","video.ut0pia.org","video.uweb.ch","video.vaku.org.ua","video.valme.io","video.veen.world","video.veloma.org","video.veraciousnetwork.com","video.vide.li","video.violoncello.ch","video.voiceover.bar","video.windfluechter.org","video.worteks.com","video.writeas.org","video.wszystkoconajwazniejsze.pl","video.xaetacore.net","video.xmpp-it.net","video.xorp.hu","video.zeitgewinn.ai","video.zeroplex.tw","video.ziez.eu","video.zlinux.ru","video.zonawarpa.it","video01.imghost.club","video02.imghost.club","video02.videohost.top","video03.imghost.club","video05.imghost.club","video06.imghost.club","video2.echelon.pl","videoarchive.wawax.info","videohaven.com","videomensoif.ynh.fr","videos-libr.es","videos-passages.huma-num.fr","videos.80px.com","videos.aadtp.be","videos.aangat.lahat.computer","videos.abnormalbeings.space","videos.adhocmusic.com","videos.ahp-numerique.fr","videos.alamaisondulibre.org","videos.ananace.dev","videos.apprendre-delphi.fr","videos.ardmoreleader.com","videos.arretsurimages.net","videos.avency.de","videos.b4tech.org","videos.bik.opencloud.lu","videos.brookslawson.com","videos.c.lhardy.eu","videos.capas.se","videos.capitoledulibre.org","videos.cassidypunchmachine.com","videos.cemea.org","videos.chardonsbleus.org","videos.cloudron.io","videos.codingotaku.com","videos.coletivos.org","videos.conferences-gesticulees.net","videos.courat.fr","videos.danksquad.org","videos.devteams.at","videos.domainepublic.net","videos.draculo.net","videos.dromeadhere.fr","videos.elenarossini.com","videos.enisa.europa.eu","videos.erg.be","videos.espitallier.net","videos.evoludata.com","videos.explain-it.org","videos.fairetilt.co","videos.figucarolina.org","videos.foilen.com","videos.foilen.net","videos.fozfuncs.com","videos.freeculturist.com","videos.fsci.in","videos.gaboule.com","videos.gamercast.net","videos.gamolf.fr","videos.gianmarco.gg","videos.globenet.org","videos.gnieh.org","videos.hack2g2.fr","videos.hardcoredevs.com","videos.harrk.dev","videos.hauspie.fr","videos.hilariouschaos.com","videos.homeserverhq.com","videos.icum.to","videos.idiocy.xyz","videos.ikacode.com","videos.im.allmendenetz.de","videos.indryve.org","videos.irrelevant.me.uk","videos.iut-orsay.fr","videos.jacksonchen666.com","videos.jevalide.ca","videos.john-livingston.fr","videos.kaz.bzh","videos.koumoul.com","videos.kuoushi.com","videos.lacontrevoie.fr","videos.laguixeta.cat","videos.laliguepaysdelaloire.org","videos.lemouvementassociatif-pdl.org","videos.lescommuns.org","videos.leslionsfloorball.fr","videos.libervia.org","videos.librescrum.org","videos.livewyre.org","videos.lukazeljko.xyz","videos.luke.killarny.net","videos.lukesmith.xyz","videos.martyn.berlin","videos.metschkoll.de","videos.mgnosv.org","videos.miolo.org","videos.monstro1.com","videos.mykdeen.com","videos.myourentemple.org","videos.nerdout.online","videos.netwaver.xyz","videos.noeontheend.com","videos.npo.city","videos.offroad.town","videos.ookami.space","videos.pair2jeux.tube","videos.parleur.net","videos.pcorp.us","videos.pepicrft.me","videos.phegan.live","videos.pixelpost.uk","videos.pkutalk.com","videos.poweron.dk","videos.projets-libres.org","videos.rampin.org","videos.realnephestate.xyz","videos.rights.ninja","videos.ritimo.org","videos.rossmanngroup.com","videos.scanlines.xyz","videos.shendrick.net","videos.shmalls.pw","videos.side-ways.net","videos.spacebar.ca","videos.spacefun.ch","videos.spla.cat","videos.squat.net","videos.stadtfabrikanten.org","videos.sujets-libres.fr","videos.supertuxkart.net","videos.sutcliffe.xyz","videos.tcit.fr","videos.tcjc.uk","videos.testimonia.org","videos.tfcconnection.org","videos.thegreenwizard.win","videos.thinkerview.com","videos.tiffanysostar.com","videos.toromedia.com","videos.triceraprog.fr","videos.triplebit.net","videos.trom.tf","videos.trucs-de-developpeur-web.fr","videos.tuist.dev","videos.tusnio.me","videos.ubuntu-paris.org","videos.upr.fr","videos.utsukta.org","videos.viorsan.com","videos.weaponisedautism.com","videos.webcoaches.net","videos.wikilibriste.fr","videos.wirtube.de","videos.yesil.club","videos.yeswiki.net","videosafehaven.com","videoteca.ibict.br","videoteca.kenobit.it","videotheque.uness.fr","videotube.duckdns.org","videotvlive.nemethstarproductions.eu","videovortex.tv","videowisent.maw.best","viditube.site","vids.krserv.social","vids.mariusdavid.fr","vids.roshless.me","vids.stary.pc.pl","vids.tekdmn.me","vids.thewarrens.name","vids.ttlmakerspace.com","vids.witchcraft.systems","vidz.antifa.club","vidz.dou.bet","vidz.julien.ovh","views.southfox.me","vigilante.tv","virtual-girls-are.definitely-for.me","viste.pt","vizyon.kaubuntu.re","vlad.tube","vm02408.procolix.com","vn.jvideos.top","vn.zohup.net","vod.newellijay.tv","vods.198x.eu","vods.juni.tube","volk.love","voluntarytube.com","vstation.hsu.edu.hk","vtr.chikichiki.tube","vulgarisation-informatique.fr","vuna.no","wacha.punks.cc","wahrheitsministerium.xyz","walleyewalloping.fedihost.io","walsh.fallcounty.omg.lol","watch.bojidar-bg.dev","watch.caeses.com","watch.easya.solutions","watch.eeg.cl.cam.ac.uk","watch.goodluckgabe.life","watch.heehaw.space","watch.jimmydore.com","watch.littleshyfim.com","watch.makearmy.io","watch.nuked.social","watch.ocaml.org","watch.oroykhon.ru","watch.revolutionize.social","watch.rvtownsquare.com","watch.softinio.com","watch.tacticaltech.org","watch.thelema.social","watch.therisingeagle.info","watch.vinbrun.com","watch.weanimatethings.com","we.haydn.rocks","weare.dcnh.tv","webtv.vandoeuvre.net","westergaard.video","widemus.de","wiwi.video","woodland.video","worctube.com","wtfayla.com","wur.pm","www.aishaalrasheedmosque.tv","www.earthclimate.tv","www.elltube.gr","www.jvideos.top","www.komitid.tv","www.kotikoff.net","www.makertube.net","www.mypeer.tube","www.nadajemy.com","www.neptube.io","www.novatube.net","www.piratentube.de","www.pony.tube","www.videos-libr.es","www.vnchich.in","www.vnchich.top","www.vnshow.net","www.wtfayla.com","www.yiny.org","www.zappiens.br","www.zohup.in","www.zohup.link","x.vnchich.vip","x.zohup.top","x.zohup.vip","x1.vnchich.in","xn--fsein-zqa5f.xn--nead-na-bhfinleog-hpb.ie","xxivproduction.video","yawawi.com","yellowpages.video","youslots.tv","youtube.n-set.ru","ysm.info","yt.lostpod.space","yt.orokoro.ru","ytube.retronerd.at","yuitobe.wikiwiki.li","zappiens.br","zeitgewinn-peertube.tfrfia.easypanel.host","zensky-pj.com","zentube.org"];
 // END AUTOGENERATED INSTANCES
