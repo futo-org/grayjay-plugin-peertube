@@ -1101,6 +1101,22 @@ source.getContentDetails = function (url) {
 	
 	if (!videoDetails.isOk) {
 		throwIfCaptcha(videoDetails);
+
+		// Handle "does_not_respect_follow_constraints" (403) for non-local videos.
+		// PeerTube returns this when the instance has metadata for a federated video
+		// but doesn't follow the origin instance. The response includes an originUrl field.
+		if (videoDetails.code === 403 && videoDetails.body) {
+			try {
+				const errorObj = JSON.parse(videoDetails.body);
+				if (errorObj.code === "does_not_respect_follow_constraints" && errorObj.originUrl) {
+					log("Video not available due to follow constraints, redirecting to origin: " + errorObj.originUrl);
+					return source.getContentDetails(errorObj.originUrl);
+				}
+			} catch (e) {
+				// Not JSON or missing fields, fall through to normal error handling
+			}
+		}
+
 		log("Failed to get video detail", videoDetails);
 		return null;
 	}
@@ -1109,6 +1125,21 @@ source.getContentDetails = function (url) {
 	if (!obj) {
 		log("Failed to parse response");
 		return null;
+	}
+
+	// Handle federated videos with no local media files.
+	// PeerTube instances may have metadata for remote videos but not the actual media.
+	// In this case, isLocal is false and streamingPlaylists/files are empty.
+	// The obj.url field points to the origin instance.
+	if (obj.isLocal === false && !hasPlayableSources(obj)) {
+		const originUrl = obj.url;
+		if (originUrl) {
+			const originBaseUrl = getBaseUrl(originUrl);
+			if (originBaseUrl && originBaseUrl !== sourceBaseUrl) {
+				log("Video is not local, redirecting to origin: " + originUrl);
+				return source.getContentDetails(originUrl);
+			}
+		}
 	}
 
 	// Check if content is sensitive and if playing NSFW content is disabled
@@ -2588,6 +2619,18 @@ function createVideoSource(file, duration) {
 		duration: duration,
 		container: "video/mp4"
 	});
+}
+
+/**
+ * Checks whether a PeerTube video object has any playable media sources (streaming playlists or direct files).
+ * Used to detect federated videos where the instance has metadata but not the actual media.
+ * @param {Object} obj - PeerTube video object
+ * @returns {boolean} True if the video has at least one playable source
+ */
+function hasPlayableSources(obj) {
+	const hasStreaming = obj.streamingPlaylists && obj.streamingPlaylists.length > 0;
+	const hasFiles = obj.files && obj.files.length > 0;
+	return hasStreaming || hasFiles;
 }
 
 /**
