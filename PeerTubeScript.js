@@ -2369,6 +2369,29 @@ function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {
 	return true;
 }
 
+// PeerTube video category IDs to names mapping
+// Source: https://github.com/Chocobozzz/PeerTube/blob/develop/server/core/initializers/constants.ts#L589
+const PEERTUBE_CATEGORY_NAMES = {
+	1: "Music", 
+	2: "Films", 
+	3: "Vehicles", 
+	4: "Art", 
+	5: "Sports",
+	6: "Travels", 
+	7: "Gaming", 
+	8: "People", 
+	9: "Comedy", 
+	10: "Entertainment",
+	11: "News & Politics", 
+	12: "How To", 
+	13: "Education", 
+	14: "Activism",
+	15: "Science & Technology", 
+	16: "Animals", 
+	17: "Kids", 
+	18: "Food"
+};
+
 function formatFileSize(bytes) {
 	if (!bytes || bytes <= 0) return "0 B";
 	const units = ["B", "KB", "MB", "GB", "TB"];
@@ -2409,6 +2432,14 @@ function getInstanceInfoText(baseUrl, configResp, aboutResp, statsResp) {
 			if (parsedConfig && parsedConfig.serverVersion) infoLines.push("PeerTube version: " + parsedConfig.serverVersion);
 			if (parsedConfig && parsedConfig.signup && parsedConfig.signup.allowed !== undefined) {
 				infoLines.push("Registration: " + (parsedConfig.signup.allowed ? "Open - " + baseUrl + "/signup" : "Closed"));
+			}
+			if (inst.categories && inst.categories.length > 0) {
+				const categoryNames = inst.categories
+					.map(function (id) { return PEERTUBE_CATEGORY_NAMES[id]; })
+					.filter(Boolean);
+				if (categoryNames.length > 0) {
+					infoLines.push("Categories: " + categoryNames.join(", "));
+				}
 			}
 		} else if (parsedConfig && parsedConfig.serverVersion) {
 			infoLines.push("PeerTube version: " + parsedConfig.serverVersion);
