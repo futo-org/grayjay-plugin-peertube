@@ -461,6 +461,13 @@
 			"description": "Fetch suggestions from the search API as you type. Makes extra API requests which may increase instance load.",
 			"type": "Boolean",
 			"default": "false"
+		},
+		{
+			"variable": "showInstanceInfo",
+			"name": "Show Instance Information",
+			"description": "Display PeerTube instance details (name, version, stats) in video and channel descriptions. Makes extra API requests.",
+			"type": "Boolean",
+			"default": "false"
 		}
 	],
 	"changelog": {

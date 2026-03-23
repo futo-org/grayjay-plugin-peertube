@@ -52,7 +52,8 @@ let state = {
 	serverVersion: '',
 	defaultHeaders: {
 		'User-Agent': getUserAgent()
-	}
+	},
+	instanceInfoCache: {}
 }
 
 let INDEX_INSTANCES = {
@@ -646,17 +647,34 @@ source.getChannel = function (url) {
 	try {
 		const [{ body: obj }] = httpGET({ url: urlWithParams, parseResponse: true });
 
+		let instanceConfigResp;
+		let aboutResp;
+		let statsResp;
+		if (_settings.showInstanceInfo && getInstanceInfoCache()[sourceBaseUrl] === undefined) {
+			[instanceConfigResp, aboutResp, statsResp] = httpGET([
+				`${sourceBaseUrl}/api/v1/config`,
+				`${sourceBaseUrl}/api/v1/config/about`,
+				`${sourceBaseUrl}/api/v1/server/stats`
+			]);
+		}
+
 		// Add URL hint using utility function
 		const channelUrl = obj.url || `${sourceBaseUrl}/video-channels/${handle}`;
 		const channelUrlWithHint = addChannelUrlHint(channelUrl);
-		
+
+		const channelDescription = obj.description ?? "";
+		const instanceInfo = getInstanceInfoText(sourceBaseUrl, instanceConfigResp, aboutResp, statsResp);
+		const fullDescription = instanceInfo
+			? (channelDescription ? channelDescription + "\n\n" + instanceInfo : instanceInfo)
+			: channelDescription;
+
 		return new PlatformChannel({
 			id: new PlatformID(PLATFORM, obj.name, config.id),
 			name: obj.displayName || obj.name || handle,
 			thumbnail: getAvatarUrl(obj, sourceBaseUrl),
 			banner: getBannerUrl(obj, sourceBaseUrl),
 			subscribers: obj.followersCount || 0,
-			description: obj.description ?? "",
+			description: fullDescription,
 			url: channelUrlWithHint,
 			links: {},
 			urlAlternatives: [
@@ -1091,13 +1109,27 @@ source.getContentDetails = function (url) {
 
 	const sourceBaseUrl = getBaseUrl(url);
 	
-	// Create a batch request for video details, captions, chapters and instance config
-	const [videoDetails, captionsData, chaptersData, instanceConfig] = httpGET([
+	// Create a batch request for video details, captions, chapters, instance config
+	// and optionally instance about/stats if showInstanceInfo is enabled
+	const requests = [
 		`${sourceBaseUrl}/api/v1/videos/${videoId}`,
 		`${sourceBaseUrl}/api/v1/videos/${videoId}/captions`,
 		`${sourceBaseUrl}/api/v1/videos/${videoId}/chapters`,
 		`${sourceBaseUrl}/api/v1/config`
-	]);
+	];
+	if (_settings.showInstanceInfo && getInstanceInfoCache()[sourceBaseUrl] === undefined) {
+		requests.push(
+			`${sourceBaseUrl}/api/v1/config/about`,
+			`${sourceBaseUrl}/api/v1/server/stats`
+		);
+	}
+	const responses = httpGET(requests);
+	const videoDetails = responses[0];
+	const captionsData = responses[1];
+	const chaptersData = responses[2];
+	const instanceConfig = responses[3];
+	const aboutResp = responses[4];
+	const statsResp = responses[5];
 	
 	if (!videoDetails.isOk) {
 		throwIfCaptcha(videoDetails);
@@ -1179,6 +1211,11 @@ source.getContentDetails = function (url) {
 		} catch (e) {
 			log("Failed to fetch full description", e);
 		}
+	}
+
+	const instanceInfo = getInstanceInfoText(sourceBaseUrl, instanceConfig, aboutResp, statsResp);
+	if (instanceInfo) {
+		fullDescription = (fullDescription || "") + "\n\n" + instanceInfo;
 	}
 
 	const result = new PlatformVideoDetails({
@@ -2332,7 +2369,74 @@ function ServerInstanceVersionIsSameOrNewer(testVersion, expectedVersion) {
 	return true;
 }
 
-/** 
+function formatFileSize(bytes) {
+	if (!bytes || bytes <= 0) return "0 B";
+	const units = ["B", "KB", "MB", "GB", "TB"];
+	const i = Math.floor(Math.log(bytes) / Math.log(1024));
+	return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + " " + units[i];
+}
+
+function formatCount(n) {
+	if (n == null) return "0";
+	return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function getInstanceInfoCache() {
+	if (!state.instanceInfoCache || typeof state.instanceInfoCache !== 'object') {
+		state.instanceInfoCache = {};
+	}
+	return state.instanceInfoCache;
+}
+
+function getInstanceInfoText(baseUrl, configResp, aboutResp, statsResp) {
+	if (!_settings.showInstanceInfo) return "";
+	const instanceInfoCache = getInstanceInfoCache();
+	if (instanceInfoCache[baseUrl] !== undefined) {
+		return instanceInfoCache[baseUrl];
+	}
+
+	try {
+		const infoLines = [];
+
+		const parsedConfig = configResp && configResp.isOk
+			? JSON.parse(configResp.body)
+			: null;
+
+		if (aboutResp && aboutResp.isOk) {
+			const about = JSON.parse(aboutResp.body);
+			const inst = about.instance || {};
+			if (inst.name) infoLines.push("Instance: " + inst.name);
+			if (parsedConfig && parsedConfig.serverVersion) infoLines.push("PeerTube version: " + parsedConfig.serverVersion);
+			if (parsedConfig && parsedConfig.signup && parsedConfig.signup.allowed !== undefined) {
+				infoLines.push("Registration: " + (parsedConfig.signup.allowed ? "Open - " + baseUrl + "/signup" : "Closed"));
+			}
+		} else if (parsedConfig && parsedConfig.serverVersion) {
+			infoLines.push("PeerTube version: " + parsedConfig.serverVersion);
+		}
+
+		if (statsResp && statsResp.isOk) {
+			const stats = JSON.parse(statsResp.body);
+			if (infoLines.length > 0) {
+				infoLines.push("");
+			}
+			infoLines.push("Videos: " + formatCount(stats.totalLocalVideos) + " | Views: " + formatCount(stats.totalLocalVideoViews) + " | Users: " + formatCount(stats.totalUsers));
+			infoLines.push("Comments: " + formatCount(stats.totalLocalVideoComments) + " | Storage: " + formatFileSize(stats.totalLocalVideoFilesSize));
+			infoLines.push("Followers: " + formatCount(stats.totalInstanceFollowers) + " | Following: " + formatCount(stats.totalInstanceFollowing));
+		}
+
+		const result = infoLines.length > 0
+			? ["---", "", "PeerTube Instance Information", "", ...infoLines].join("\n")
+			: "";
+		instanceInfoCache[baseUrl] = result;
+		return result;
+	} catch (e) {
+		log("Failed to fetch instance info for " + baseUrl, e);
+		instanceInfoCache[baseUrl] = "";
+		return "";
+	}
+}
+
+/**
 * Find and return the avatar URL from various potential locations to support different Peertube instance versions 
 * @param {object} obj  
 * @returns {String} Avatar URL 
