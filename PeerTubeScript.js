@@ -1086,7 +1086,7 @@ source.isContentDetailsUrl = function (url) {
 source.getContentDetails = function (url) {
 	const videoId = extractVideoId(url);
 	if (!videoId) {
-		return null;
+		throw new UnavailableException("Could not extract a video ID from the URL " + url);
 	}
 
 	const sourceBaseUrl = getBaseUrl(url);
@@ -1117,14 +1117,22 @@ source.getContentDetails = function (url) {
 			}
 		}
 
+		if (videoDetails.code === 404) {
+			throw new UnavailableException("We couldn't find any resource tied to the URL " + url + " you were looking for.");
+		}
+
 		log("Failed to get video detail", videoDetails);
-		return null;
+		throw new UnavailableException("Failed to retrieve video details from " + url + " (HTTP " + videoDetails.code + ").");
 	}
 
-	const obj = JSON.parse(videoDetails.body);
+	let obj;
+	try {
+		obj = JSON.parse(videoDetails.body);
+	} catch (error) {
+		throw new UnavailableException("Failed to parse video details response from " + url);
+	}
 	if (!obj) {
-		log("Failed to parse response");
-		return null;
+		throw new UnavailableException("Failed to parse video details response from " + url);
 	}
 
 	// Handle federated videos with no local media files.
