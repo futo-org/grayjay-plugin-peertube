@@ -472,7 +472,9 @@
 	],
 	"changelog": {
 		"27": [
-			"Improvement: Support PeerTube federated video redirect to origin instance;"
+			"Improvement: Support PeerTube federated video redirect to origin instance;",
+			"Improvement: Improve error handling for content details;",
+			"Improvement: Add opt-in setting to show instance info in channel and content descriptions;"
 		],
 		"26": [
 			"Improvement: Sync known instances with SepiaSearch, fediverse.observer and fedidb.org;",
