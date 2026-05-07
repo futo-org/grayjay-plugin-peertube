@@ -104,6 +104,27 @@ source.enable = function (conf, settings, saveStateStr) {
 		try {
 			const [{ body: serverConfig }] = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/config`, parseResponse: true });
 			state.serverVersion = serverConfig.serverVersion;
+      
+      /* retrieve instance avatar block start */
+      const instanceConfig = serverConfig && serverConfig.instance;
+      let avatarPath = null;
+
+      if (instanceConfig) {
+          // PeerTube < v6
+          if (instanceConfig.avatar && instanceConfig.avatar.path) {
+              avatarPath = instanceConfig.avatar.path;
+          }
+          // PeerTube >= v6
+          else if (instanceConfig.avatars && instanceConfig.avatars.length > 0) {
+              avatarPath = instanceConfig.avatars[instanceConfig.avatars.length - 1].path;
+          }
+      }
+
+      if (avatarPath) {
+          state.instanceAvatarUrl = plugin.config.constants.baseUrl + avatarPath;
+      }
+      /* retrieve instance avatar block end */      
+      
 		} catch (e) {
 			log("Failed to detect server version, continuing with defaults: " + e);
 		}
