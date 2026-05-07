@@ -110,18 +110,22 @@ source.enable = function (conf, settings, saveStateStr) {
       let avatarPath = null;
 
       if (instanceConfig) {
-          // PeerTube < v6
+
           if (instanceConfig.avatar && instanceConfig.avatar.path) {
+              // PeerTube < v6
               avatarPath = instanceConfig.avatar.path;
-          }
-          // PeerTube >= v6
-          else if (instanceConfig.avatars && instanceConfig.avatars.length > 0) {
+          } else if (instanceConfig.avatars && instanceConfig.avatars.length > 0) {
+              // PeerTube >= v6
               avatarPath = instanceConfig.avatars[instanceConfig.avatars.length - 1].path;
           }
+      } else {
+        log("Failed to get instance config");        
       }
 
       if (avatarPath) {
           state.instanceAvatarUrl = plugin.config.constants.baseUrl + avatarPath;
+      } else {
+        log("Failed to get server avatar, using default");        
       }
       /* retrieve instance avatar block end */      
       
@@ -2511,8 +2515,10 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 	if (relativePath) {
 		return `${baseUrl}${relativePath}`;
 	}
-
-	return URLS.PEERTUBE_LOGO;
+  
+  
+  // use dynamic avatar if found
+  return (state && state.instanceAvatarUrl) || URLS.PEERTUBELOGO;
 }
 
 /**
