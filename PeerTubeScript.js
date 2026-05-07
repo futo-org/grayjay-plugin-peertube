@@ -1483,6 +1483,45 @@ source.getPlaybackTracker = function (url) {
 
 };
 
+/*
+  expose dedicate helper
+  to get dynamic peertube instance icon if available
+  
+  i.e. into Grayjay.Desktop
+
+*/
+
+source.getIcon = function () {
+  try {
+    const [{ body: serverConfig }] = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/config`, parseResponse: true });
+    const instanceConfig = serverConfig && serverConfig.instance;
+    let avatarPath = null;
+
+    if (instanceConfig) {
+        if (instanceConfig.avatar && instanceConfig.avatar.path) {
+            // PeerTube < v6
+            avatarPath = instanceConfig.avatar.path;
+        } else if (instanceConfig.avatars && instanceConfig.avatars.length > 0) {
+            // PeerTube >= v6
+            avatarPath = instanceConfig.avatars[instanceConfig.avatars.length - 1].path;
+        }
+    } else {
+      log("Failed to get instance config in getIcon");        
+    }        
+
+    if (avatarPath) {
+        return plugin.config.constants.baseUrl + avatarPath;
+    } else {
+      log("Failed to get server avatar in getIcon, using default");        
+    }        
+      
+  } catch (e) {
+      log("Error in getIcon: " + e);
+  }
+
+  return URLS.PEERTUBE_LOGO;
+};
+
 //https://docs.joinpeertube.org/api-rest-reference.html#tag/Video/operation/addView
 
 // =============================================================================
