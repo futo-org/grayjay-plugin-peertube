@@ -104,6 +104,31 @@ source.enable = function (conf, settings, saveStateStr) {
 		try {
 			const [{ body: serverConfig }] = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/config`, parseResponse: true });
 			state.serverVersion = serverConfig.serverVersion;
+      
+      /* retrieve instance avatar block start */
+      const instanceConfig = serverConfig && serverConfig.instance;
+      let avatarPath = null;
+
+      if (instanceConfig) {
+
+          if (instanceConfig.avatar && instanceConfig.avatar.path) {
+              // PeerTube < v6
+              avatarPath = instanceConfig.avatar.path;
+          } else if (instanceConfig.avatars && instanceConfig.avatars.length > 0) {
+              // PeerTube >= v6
+              avatarPath = instanceConfig.avatars[instanceConfig.avatars.length - 1].path;
+          }
+      } else {
+        log("Failed to get instance config");        
+      }
+
+      if (avatarPath) {
+          state.instanceAvatarUrl = plugin.config.constants.baseUrl + avatarPath;
+      } else {
+        log("Failed to get server avatar, using default");        
+      }
+      /* retrieve instance avatar block end */      
+      
 		} catch (e) {
 			log("Failed to detect server version, continuing with defaults: " + e);
 		}
@@ -1458,6 +1483,173 @@ source.getPlaybackTracker = function (url) {
 
 };
 
+/*
+  expose dedicate helper
+  to get dynamic peertube instance icon if available
+  
+  i.e. into Grayjay.Desktop
+  HOW TO use it:
+  
+diff --git a/Grayjay.ClientServer/Controllers/SourcesController.cs b/Grayjay.ClientServer/Controllers/SourcesController.cs
+index afedc85..3cedb6f 100644
+--- a/Grayjay.ClientServer/Controllers/SourcesController.cs
++++ b/Grayjay.ClientServer/Controllers/SourcesController.cs
+@@ -25,6 +25,23 @@ namespace Grayjay.ClientServer.Controllers
+     {
+
+
++        [HttpGet]
++        public string GetDynamicIcon(string id)
++        {
++            var plugin = StatePlatform.GetClient(id);
++            if (plugin == null) return null;
++
++            try
++            {
++                // Call the dynamic getIcon method implemented in the plugin script
++                return plugin.CallMethod("getIcon");
++            }
++            catch (Exception ex)
++            {
++                Logger.e(nameof(SourcesController), "Failed to call getIcon for plugin [" + id + "]: " + ex.Message);
++                return null;
++            }
++        }
+         [HttpGet]
+         public PluginConfig[] Sources()
+         {
+diff --git a/Grayjay.Desktop.Web/src/backend/SourcesBackend.ts b/Grayjay.Desktop.Web/src/backend/SourcesBackend.ts
+index 40c5eee..1d4ec96 100644
+--- a/Grayjay.Desktop.Web/src/backend/SourcesBackend.ts
++++ b/Grayjay.Desktop.Web/src/backend/SourcesBackend.ts
+@@ -78,6 +78,10 @@ export abstract class SourcesBackend {
+     static async sourceInstallPeerTubePrompt(url: string): Promise<IPluginPrompt> {
+         return await Backend.POST("/sources/SourceInstallPeerTubePrompt", JSON.stringify(url), "application/json") as any;
+     }
++
++    static async getDynamicIcon(id: string): Promise<string | null> {
++        return await Backend.GET("/sources/GetDynamicIcon?id=" + id) as string;
++    }
+
+     static login(id: string) {
+         Backend.GET("/sources/SourceLogin?id=" + id);
+diff --git a/Grayjay.Desktop.Web/src/backend/models/plugin/ISourceConfigState.ts b/Grayjay.Desktop.Web/src/backend/models/plugin/ISourceConfigState.ts
+index b20226b..df89304 100644
+--- a/Grayjay.Desktop.Web/src/backend/models/plugin/ISourceConfigState.ts
++++ b/Grayjay.Desktop.Web/src/backend/models/plugin/ISourceConfigState.ts
+@@ -75,9 +75,10 @@ export interface ISourceConfig {
+     version: number;
+     author: string;
+     authorUrl: string;
+-    iconUrl: string;
++    iconUrl: string; // <--- Static icon URL read directly from the plugin's JSON config file
+     sourceUrl: string;
+     scriptUrl: string;
++    scriptUrl: string;
+     allowUrls: string[];
+     packages: string[];
+     scriptSignature: string;
+@@ -91,7 +92,7 @@ export interface ISourceConfig {
+     supportedClaimTypes: number[];
+     primaryClaimFieldType: number;
+     settings: ISourceSetting[];
+-    absoluteIconUrl?: string;
++    absoluteIconUrl?: string; // <--- Computed absolute URL derived from the static iconUrl above
+     absoluteScriptUrl?: string;
+ }
+
+diff --git a/Grayjay.Desktop.Web/src/pages/Sources/index.tsx b/Grayjay.Desktop.Web/src/pages/Sources/index.tsx
+index 11d6f3c..3314afa 100644
+--- a/Grayjay.Desktop.Web/src/pages/Sources/index.tsx
++++ b/Grayjay.Desktop.Web/src/pages/Sources/index.tsx
+@@ -168,9 +168,11 @@ const SourcesPage: Component = () => {
+                             }}>
+                               <img src={iconThumb} />
+                             </div>
+-                            <div class={styles.image}>
+-                              <img src={StateGlobal.getSourceConfig(source()!.id)?.absoluteIconUrl} />
+-                            </div>
++                               <div class={styles.image}>
++                                 // Try dynamic icon from plugin.getIcon(), fallback to static absoluteIconUrl (derived from JSON iconUrl)
++                                 <img src={StateGlobal.getDynamicIcon(source()!.id).then(icon => icon ?? StateGlobal.getSourceConfig(source()!.id)?.absoluteIconUrl)} />
++                               </div>
++
+                             <div class={styles.name}>
+                               {source()!.name}
+                             </div>
+@@ -198,9 +200,11 @@ const SourcesPage: Component = () => {
+                       groupRememberLast: true,
+                       onPress: () => enableSource(source)
+                     }}>
+-                      <div class={styles.image}>
+-                        <img src={StateGlobal.getSourceConfig(source.id)?.absoluteIconUrl} />
+-                      </div>
++                       <div class={styles.image}>
++                                 // Try dynamic icon from plugin.getIcon(), fallback to static absoluteIconUrl (derived from JSON iconUrl)
++                         <img src={StateGlobal.getDynamicIcon(source.id).then(icon => icon ?? StateGlobal.getSourceConfig(source.id)?.absoluteIconUrl)} />
++                       </div>
++
+                       <div class={styles.name}>
+                         {source.name}
+                       </div>
+diff --git a/Grayjay.Desktop.Web/src/state/StateGlobal.tsx b/Grayjay.Desktop.Web/src/state/StateGlobal.tsx
+index cf2da7f..5513fc6 100644
+--- a/Grayjay.Desktop.Web/src/state/StateGlobal.tsx
++++ b/Grayjay.Desktop.Web/src/state/StateGlobal.tsx
+@@ -33,7 +33,8 @@ export interface StateGlobal {
+     getSourceConfig: (id: string | undefined) => ISourceConfig | undefined,
+     getSourceState: (id: string | undefined) => ISourceConfigState | undefined,
+     getCommonSearchCapabilities: (sourceIds: string[]) => IResultCapabilities | undefined,
+-    getCommonSearchChannelContentsCapabilities: (sourceIds: string[]) => IResultCapabilities | undefined
++    getCommonSearchChannelContentsCapabilities: (sourceIds: string[]) => IResultCapabilities | undefined,
++    getDynamicIcon: (id: string) => Promise<string | null>
+ };
+
+ function createState() {
+@@ -174,6 +175,9 @@ function createState() {
+                 return undefined;
+             return sourceStates$()?.find(x=>x.config.id == id);
+         },
++        getDynamicIcon(id: string) {
++            return SourcesBackend.getDynamicIcon(id);
++        },
+         getCommonSearchCapabilities(sourceIds: string[]): IResultCapabilities | undefined {
+             return getCommonSearchCapabilitiesType(sourceIds, (sourceId) => this.getSourceState(sourceId)?.capabilitiesSearch);
+         },  
+
+*/
+
+source.getIcon = function () {
+  try {
+    const [{ body: serverConfig }] = httpGET({ url: `${plugin.config.constants.baseUrl}/api/v1/config`, parseResponse: true });
+    const instanceConfig = serverConfig && serverConfig.instance;
+    let avatarPath = null;
+
+    if (instanceConfig) {
+        if (instanceConfig.avatar && instanceConfig.avatar.path) {
+            // PeerTube < v6
+            avatarPath = instanceConfig.avatar.path;
+        } else if (instanceConfig.avatars && instanceConfig.avatars.length > 0) {
+            // PeerTube >= v6
+            avatarPath = instanceConfig.avatars[instanceConfig.avatars.length - 1].path;
+        }
+    } else {
+      log("Failed to get instance config in getIcon");        
+    }        
+
+    if (avatarPath) {
+        return plugin.config.constants.baseUrl + avatarPath;
+    } else {
+      log("Failed to get server avatar in getIcon, using default");        
+    }        
+      
+  } catch (e) {
+      log("Error in getIcon: " + e);
+  }
+
+  return URLS.PEERTUBE_LOGO;
+};
+
 //https://docs.joinpeertube.org/api-rest-reference.html#tag/Video/operation/addView
 
 // =============================================================================
@@ -2490,8 +2682,10 @@ function getAvatarUrl(obj, baseUrl = plugin.config.constants.baseUrl) {
 	if (relativePath) {
 		return `${baseUrl}${relativePath}`;
 	}
-
-	return URLS.PEERTUBE_LOGO;
+  
+  
+  // use dynamic avatar if found
+  return (state && state.instanceAvatarUrl) || URLS.PEERTUBELOGO;
 }
 
 /**
